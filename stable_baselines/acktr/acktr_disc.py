@@ -9,19 +9,19 @@ import numpy as np
 from gym.spaces import Box
 
 from stable_baselines import logger
-from stable_baselines.common import explained_variance, ActorCriticRLModel, tf_util, SetVerbosity, TensorboardWriter
+from stable_baselines.common import explained_variance, BaseRLModel, tf_util, SetVerbosity, TensorboardWriter
 from stable_baselines.a2c.a2c import A2CRunner
 from stable_baselines.a2c.utils import Scheduler, find_trainable_variables, calc_entropy, mse, \
     total_episode_reward_logger
 from stable_baselines.acktr import kfac
-from stable_baselines.common.policies import LstmPolicy, ActorCriticPolicy
+from stable_baselines.common.policies import LstmPolicy, BasePolicy
 
 
-class ACKTR(ActorCriticRLModel):
+class ACKTR(BaseRLModel):
     """
     The ACKTR (Actor Critic using Kronecker-Factored Trust Region) model class, https://arxiv.org/abs/1708.05144
 
-    :param policy: (ActorCriticPolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
+    :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
     :param gamma: (float) Discount factor
     :param nprocs: (int) The number of threads for TensorFlow operations
@@ -96,8 +96,8 @@ class ACKTR(ActorCriticRLModel):
     def setup_model(self):
         with SetVerbosity(self.verbose):
 
-            assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the ACKTR model must be " \
-                                                               "an instance of common.policies.ActorCriticPolicy."
+            assert issubclass(self.policy, BasePolicy), "Error: the input policy for the ACKTR model must be " \
+                                                               "an instance of common.policies.BasePolicy."
 
             if isinstance(self.action_space, Box):
                 raise NotImplementedError("WIP: ACKTR does not support Continuous actions yet.")

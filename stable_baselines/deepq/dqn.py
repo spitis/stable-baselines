@@ -5,19 +5,19 @@ import numpy as np
 import gym
 
 from stable_baselines import logger, deepq
-from stable_baselines.common import tf_util, OffPolicyRLModel, SetVerbosity, TensorboardWriter
+from stable_baselines.common import tf_util, BaseRLModel, SetVerbosity, TensorboardWriter
+from stable_baselines.common.policies import BasePolicy
 from stable_baselines.common.vec_env import VecEnv
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.deepq.replay_buffer import ReplayBuffer, PrioritizedReplayBuffer
-from stable_baselines.deepq.policies import DQNPolicy
+from stable_baselines.common.replay_buffer import ReplayBuffer
+from stable_baselines.deepq.prioritized_replay import PrioritizedReplayBuffer  # noqa
 from stable_baselines.a2c.utils import find_trainable_variables, total_episode_reward_logger
 
-
-class DQN(OffPolicyRLModel):
+class DQN(BaseRLModel):
     """
     The DQN model class. DQN paper: https://arxiv.org/pdf/1312.5602.pdf
 
-    :param policy: (DQNPolicy or str) The policy model to use (MlpPolicy, CnnPolicy, LnMlpPolicy, ...)
+    :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, LnMlpPolicy, ...)
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
     :param gamma: (float) discount factor
     :param learning_rate: (float) learning rate for adam optimizer
@@ -54,7 +54,7 @@ class DQN(OffPolicyRLModel):
                  _init_setup_model=True):
 
         # TODO: replay_buffer refactoring
-        super(DQN, self).__init__(policy=policy, env=env, replay_buffer=None, verbose=verbose, policy_base=DQNPolicy,
+        super(DQN, self).__init__(policy=policy, env=env, verbose=verbose, policy_base=BasePolicy,
                                   requires_vec_env=False)
 
         self.checkpoint_path = checkpoint_path
@@ -104,8 +104,8 @@ class DQN(OffPolicyRLModel):
                 test_policy = self.policy.func
             else:
                 test_policy = self.policy
-            assert issubclass(test_policy, DQNPolicy), "Error: the input policy for the DQN model must be " \
-                                                       "an instance of DQNPolicy."
+            assert issubclass(test_policy, BasePolicy), "Error: the input policy for the DQN model must be " \
+                                                       "an instance of BasePolicy."
 
             self.graph = tf.Graph()
             with self.graph.as_default():
@@ -145,7 +145,8 @@ class DQN(OffPolicyRLModel):
                                                         initial_p=self.prioritized_replay_beta0,
                                                         final_p=1.0)
             else:
-                self.replay_buffer = ReplayBuffer(self.buffer_size)
+                self.replay_buffer = ReplayBuffer(self.buffer_size, action_shape=self.action_space.shape,
+                                                 observation_shape=self.observation_space.shape)
                 self.beta_schedule = None
             # Create the schedule for exploration starting from 1.
             self.exploration = LinearSchedule(schedule_timesteps=int(self.exploration_fraction * total_timesteps),
@@ -206,6 +207,8 @@ class DQN(OffPolicyRLModel):
                         (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
                     else:
                         obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
+                        rewards = np.squeeze(rewards, 1)
+                        dones = np.squeeze(dones, 1)
                         weights, batch_idxes = np.ones_like(rewards), None
 
                     if writer is not None:
@@ -255,7 +258,7 @@ class DQN(OffPolicyRLModel):
 
         observation = observation.reshape((-1,) + self.observation_space.shape)
         with self.sess.as_default():
-            actions, _, _ = self.step_model.step(observation, deterministic=deterministic)
+            actions, _, _, _ = self.step_model.step(observation, deterministic=deterministic, only_action=True)
 
         if not vectorized_env:
             actions = actions[0]
@@ -267,6 +270,7 @@ class DQN(OffPolicyRLModel):
         vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
 
         observation = observation.reshape((-1,) + self.observation_space.shape)
+        
         actions_proba = self.proba_step(observation, state, mask)
 
         if not vectorized_env:
@@ -306,20 +310,3 @@ class DQN(OffPolicyRLModel):
         params = self.sess.run(self.params)
 
         self._save_to_file(save_path, data=data, params=params)
-
-    @classmethod
-    def load(cls, load_path, env=None, **kwargs):
-        data, params = cls._load_from_file(load_path)
-
-        model = cls(policy=data["policy"], env=env, _init_setup_model=False)
-        model.__dict__.update(data)
-        model.__dict__.update(kwargs)
-        model.set_env(env)
-        model.setup_model()
-
-        restores = []
-        for param, loaded_p in zip(model.params, params):
-            restores.append(param.assign(loaded_p))
-        model.sess.run(restores)
-
-        return model

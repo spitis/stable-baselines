@@ -2,6 +2,7 @@ from abc import ABC
 
 import numpy as np
 import tensorflow as tf
+import tensorflow.contrib.layers as tf_layers
 from gym.spaces import Discrete
 
 from stable_baselines.a2c.utils import conv, linear, conv_to_fc, batch_to_seq, seq_to_batch, lstm
@@ -37,73 +38,47 @@ class BasePolicy(ABC):
     :param n_batch: (int) The number of batch to run (n_envs * n_steps)
     :param n_lstm: (int) The number of LSTM cells (for recurrent policies)
     :param reuse: (bool) If the policy is reusable or not
+    :param layers: ([int]) The size of the Neural network for the policy (if None, default to [64, 64])
     :param scale: (bool) whether or not to scale the input
     :param obs_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for observation placeholder
         and the processed observation placeholder respectivly
-    :param add_action_ph: (bool) whether or not to create an action placeholder
+    :param dueling: (bool) For DQN only: if true double the output MLP to compute a baseline for action scores
+    :param is_DQN: (bool) For DQN only: whether it is a DQN
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, scale=False,
-                 obs_phs=None, add_action_ph=False):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, layers=None, scale=False,
+                 obs_phs=None, dueling=True, is_DQN=False):
         self.n_env = n_env
         self.n_steps = n_steps
-        with tf.variable_scope("input", reuse=False):
-            if obs_phs is None:
+
+        if layers is None:
+            layers = [64, 64]
+        self.layers = layers
+        assert len(layers) >= 1, "Error: must have at least one hidden layer for the policy."
+
+        with tf.name_scope("input"):
+            # observation placeholders; raw & preprocessed (e.g., change to float or rescale)
+            if obs_phs is None: 
                 self.obs_ph, self.processed_x = observation_input(ob_space, n_batch, scale=scale)
             else:
                 self.obs_ph, self.processed_x = obs_phs
+
+            # masks/states placeholders for LSTM policies
             self.masks_ph = tf.placeholder(tf.float32, [n_batch], name="masks_ph")  # mask (done t-1)
             self.states_ph = tf.placeholder(tf.float32, [self.n_env, n_lstm * 2], name="states_ph")  # states
+            
+            # action placeholder
             self.action_ph = None
-            if add_action_ph:
-                self.action_ph = tf.placeholder(dtype=ac_space.dtype, shape=(None,) + ac_space.shape, name="action_ph")
+
         self.sess = sess
         self.reuse = reuse
         self.ob_space = ob_space
         self.ac_space = ac_space
 
-    def step(self, obs, state=None, mask=None):
-        """
-        Returns the policy for a single step
-
-        :param obs: ([float] or [int]) The current observation of the environment
-        :param state: ([float]) The last states (used in recurrent policies)
-        :param mask: ([float]) The last masks (used in recurrent policies)
-        :return: ([float], [float], [float], [float]) actions, values, states, neglogp
-        """
-        raise NotImplementedError
-
-    def proba_step(self, obs, state=None, mask=None):
-        """
-        Returns the action probability for a single step
-
-        :param obs: ([float] or [int]) The current observation of the environment
-        :param state: ([float]) The last states (used in recurrent policies)
-        :param mask: ([float]) The last masks (used in recurrent policies)
-        :return: ([float]) the action probability
-        """
-        raise NotImplementedError
-
-
-class ActorCriticPolicy(BasePolicy):
-    """
-    Policy object that implements actor critic
-
-    :param sess: (TensorFlow session) The current TensorFlow session
-    :param ob_space: (Gym Space) The observation space of the environment
-    :param ac_space: (Gym Space) The action space of the environment
-    :param n_env: (int) The number of environments to run
-    :param n_steps: (int) The number of steps to run for each environment
-    :param n_batch: (int) The number of batch to run (n_envs * n_steps)
-    :param n_lstm: (int) The number of LSTM cells (for recurrent policies)
-    :param reuse: (bool) If the policy is reusable or not
-    :param scale: (bool) whether or not to scale the input
-    """
-
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, scale=False):
-        super(ActorCriticPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=n_lstm,
-                                                reuse=reuse, scale=scale)
-        self.pdtype = make_proba_dist_type(ac_space)
+        # from old ActorCriticPolicy class, but now with DQN arg
+        # DQN uses a categorical distribution, with action probablities computed as softmax over q-values
+        # epsilon-greedy exploration and whatnot is done separately in the DQN algorithm (deepq/build_graph.py)
+        self.pdtype = make_proba_dist_type(ac_space, is_DQN=is_DQN)
         self.is_discrete = isinstance(ac_space, Discrete)
         self.policy = None
         self.proba_distribution = None
@@ -111,9 +86,19 @@ class ActorCriticPolicy(BasePolicy):
         self.deterministic_action = None
         self.initial_state = None
 
+        # from old DQN class
+        self.q_values = None
+        if self.is_discrete:
+            self.n_actions = ac_space.n
+            self.dueling = dueling
+
+        self.is_DQN = is_DQN
+
     def _setup_init(self):
         """
-        sets up the distibutions, actions, and value
+        from old ActorCriticPolicy/DQNPolicy classes
+
+        For DQN (when q_values is not none), output probabilities, else sets up the distibutions, actions, and value
         """
         with tf.variable_scope("output", reuse=True):
             assert self.policy is not None and self.proba_distribution is not None and self.value_fn is not None
@@ -125,14 +110,14 @@ class ActorCriticPolicy(BasePolicy):
                 self.policy_proba = tf.nn.softmax(self.policy_proba)
             self._value = self.value_fn[:, 0]
 
-    def step(self, obs, state=None, mask=None, deterministic=False):
+    def step(self, obs, state=None, mask=None, deterministic=True):
         """
         Returns the policy for a single step
 
         :param obs: ([float] or [int]) The current observation of the environment
         :param state: ([float]) The last states (used in recurrent policies)
         :param mask: ([float]) The last masks (used in recurrent policies)
-        :param deterministic: (bool) Whether or not to return deterministic actions.
+        :param deterministic: (bool) Whether or not to return deterministic actions. (used for DQN)
         :return: ([float], [float], [float], [float]) actions, values, states, neglogp
         """
         raise NotImplementedError
@@ -146,21 +131,34 @@ class ActorCriticPolicy(BasePolicy):
         :param mask: ([float]) The last masks (used in recurrent policies)
         :return: ([float]) the action probability
         """
-        raise NotImplementedError
+        feed_dict = {self.obs_ph: obs}
+        if state is not None:
+            feed_dict[self.states_ph] = state
+        if mask is not None:
+            feed_dict[self.masks_ph] = mask
+        return self.sess.run(self.policy_proba, feed_dict=feed_dict)
 
-    def value(self, obs, state=None, mask=None):
+    def value(self, obs, *, action=None, state=None, mask=None):
         """
         Returns the value for a single step
 
         :param obs: ([float] or [int]) The current observation of the environment
+        :param action: ([float] or [int]) The action for computing Q values (used in DQN/DDPG)
         :param state: ([float]) The last states (used in recurrent policies)
         :param mask: ([float]) The last masks (used in recurrent policies)
         :return: ([float]) The associated value of the action
         """
-        raise NotImplementedError
+        feed_dict = {self.obs_ph: obs}
+        if action is not None:
+            feed_dict[self.action_ph] = action
+        if state is not None:
+            feed_dict[self.states_ph] = state
+        if mask is not None:
+            feed_dict[self.masks_ph] = mask
+        return self.sess.run(self._value, feed_dict=feed_dict)
 
 
-class LstmPolicy(ActorCriticPolicy):
+class LstmPolicy(BasePolicy):
     """
     Policy object that implements actor critic, using LSTMs.
 
@@ -180,12 +178,11 @@ class LstmPolicy(ActorCriticPolicy):
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, layers=None,
-                 cnn_extractor=nature_cnn, layer_norm=False, feature_extraction="cnn", **kwargs):
+                 cnn_extractor=nature_cnn, layer_norm=False, feature_extraction="cnn", dueling=True, is_DQN=False, 
+                **kwargs):
         super(LstmPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm, reuse,
-                                         scale=(feature_extraction == "cnn"))
-
-        if layers is None:
-            layers = [64, 64]
+                                        layers=layers, scale=(feature_extraction == "cnn"), dueling=dueling, 
+                                        is_DQN=is_DQN)
 
         with tf.variable_scope("model", reuse=reuse):
             if feature_extraction == "cnn":
@@ -193,7 +190,7 @@ class LstmPolicy(ActorCriticPolicy):
             else:
                 activ = tf.tanh
                 extracted_features = tf.layers.flatten(self.processed_x)
-                for i, layer_size in enumerate(layers):
+                for i, layer_size in enumerate(self.layers):
                     extracted_features = activ(linear(extracted_features, 'pi_fc' + str(i), n_hidden=layer_size,
                                                       init_scale=np.sqrt(2)))
             input_sequence = batch_to_seq(extracted_features, self.n_env, n_steps)
@@ -203,7 +200,7 @@ class LstmPolicy(ActorCriticPolicy):
             rnn_output = seq_to_batch(rnn_output)
             value_fn = linear(rnn_output, 'vf', 1)
 
-            self.proba_distribution, self.policy, self.q_value = \
+            self.proba_distribution, self.policy, self.q_values = \
                 self.pdtype.proba_distribution_from_latent(rnn_output, rnn_output)
 
         self.value_fn = value_fn
@@ -218,14 +215,8 @@ class LstmPolicy(ActorCriticPolicy):
             return self.sess.run([self.action, self._value, self.snew, self.neglogp],
                                  {self.obs_ph: obs, self.states_ph: state, self.masks_ph: mask})
 
-    def proba_step(self, obs, state=None, mask=None):
-        return self.sess.run(self.policy_proba, {self.obs_ph: obs, self.states_ph: state, self.masks_ph: mask})
 
-    def value(self, obs, state=None, mask=None):
-        return self.sess.run(self._value, {self.obs_ph: obs, self.states_ph: state, self.masks_ph: mask})
-
-
-class FeedForwardPolicy(ActorCriticPolicy):
+class FeedForwardPolicy(BasePolicy):
     """
     Policy object that implements actor critic, using a feed forward neural network.
 
@@ -239,55 +230,90 @@ class FeedForwardPolicy(ActorCriticPolicy):
     :param layers: ([int]) The size of the Neural network for the policy (if None, default to [64, 64])
     :param cnn_extractor: (function (TensorFlow Tensor, ``**kwargs``): (TensorFlow Tensor)) the CNN feature extraction
     :param feature_extraction: (str) The feature extraction type ("cnn" or "mlp")
+    :param obs_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for observation placeholder
+        and the processed observation placeholder respectively
+    :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
+    :param layer_norm: (bool) enable layer normalisation
+    :param dueling: (bool) if true double the output MLP to compute a baseline for action scores
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None,
-                 cnn_extractor=nature_cnn, feature_extraction="cnn", **kwargs):
-        super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256,
-                                                reuse=reuse, scale=(feature_extraction == "cnn"))
-        if layers is None:
-            layers = [64, 64]
+                 cnn_extractor=nature_cnn, feature_extraction="cnn",
+                 obs_phs=None, layer_norm=False, dueling=True, is_DQN=False, **kwargs):
+        
+        super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps,
+                                                n_batch, n_lstm=256, dueling=dueling, is_DQN=is_DQN, reuse=reuse, 
+                                                layers=layers, scale=(feature_extraction == "cnn"), obs_phs=obs_phs)
+        
 
         with tf.variable_scope("model", reuse=reuse):
             if feature_extraction == "cnn":
                 extracted_features = cnn_extractor(self.processed_x, **kwargs)
+
                 value_fn = linear(extracted_features, 'vf', 1)
                 pi_latent = extracted_features
                 vf_latent = extracted_features
+
             else:
-                activ = tf.tanh
-                processed_x = tf.layers.flatten(self.processed_x)
-                pi_h = processed_x
-                vf_h = processed_x
-                for i, layer_size in enumerate(layers):
-                    pi_h = activ(linear(pi_h, 'pi_fc' + str(i), n_hidden=layer_size, init_scale=np.sqrt(2)))
-                    vf_h = activ(linear(vf_h, 'vf_fc' + str(i), n_hidden=layer_size, init_scale=np.sqrt(2)))
+                activ = tf.nn.relu
+                extracted_features = tf.layers.flatten(self.processed_x)
+                pi_h = extracted_features
+                vf_h = extracted_features
+                for i, layer_size in enumerate(self.layers):
+                    pi_h = tf.layers.dense(pi_h, layer_size, name = 'pi_fc' + str(i))
+                    vf_h = tf.layers.dense(vf_h, layer_size, name = 'vf_fc' + str(i))
+                    if layer_norm:
+                        pi_h = tf_layers.layer_norm(pi_h, center=True, scale=True)
+                        vf_h = tf_layers.layer_norm(vf_h, center=True, scale=True)
+                    pi_h = activ(pi_h)
+                    vf_h = activ(vf_h)
+
                 value_fn = linear(vf_h, 'vf', 1)
                 pi_latent = pi_h
                 vf_latent = vf_h
-
-            self.proba_distribution, self.policy, self.q_value = \
+            
+            # for actor-critic
+            
+            self.proba_distribution, self.policy, self.q_values = \
                 self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, init_scale=0.01)
 
+            # Dueling, currently intended for DQN only
+            if self.is_DQN and self.dueling:
+                with tf.variable_scope("dueling_state_value"):
+                    state_out = extracted_features
+                    for i, layer_size in enumerate(self.layers):
+                        state_out = tf.layers.dense(state_out, layer_size, activation=None)
+                        if layer_norm:
+                            state_out = tf_layers.layer_norm(state_out, center=True, scale=True)
+                        state_out = tf.nn.relu(state_out)
+                    state_score = tf.layers.dense(state_out, 1, activation=None)
+                action_scores_mean = tf.reduce_mean(self.q_values, axis=1)
+                action_scores_centered = self.q_values - tf.expand_dims(action_scores_mean, axis=1)
+                self.q_values = state_score + action_scores_centered
+                self.policy = self.q_values
+                self.proba_distribution = self.pdtype.proba_distribution_from_flat(self.q_values)
+        
         self.value_fn = value_fn
         self.initial_state = None
         self._setup_init()
 
-    def step(self, obs, state=None, mask=None, deterministic=False):
+    def step(self, obs, state=None, mask=None, deterministic=False, only_action=False):
+
+        if only_action: #more efficient for DQN
+            if deterministic:
+                action = self.sess.run(self.deterministic_action, {self.obs_ph: obs})
+            else:
+                action = self.sess.run(self.action, {self.obs_ph: obs})
+            return action, None, None, None
+
         if deterministic:
             action, value, neglogp = self.sess.run([self.deterministic_action, self._value, self.neglogp],
                                                    {self.obs_ph: obs})
         else:
             action, value, neglogp = self.sess.run([self.action, self._value, self.neglogp],
-                                                   {self.obs_ph: obs})
+                                                   {self.obs_ph: obs})                       
         return action, value, self.initial_state, neglogp
-
-    def proba_step(self, obs, state=None, mask=None):
-        return self.sess.run(self.policy_proba, {self.obs_ph: obs})
-
-    def value(self, obs, state=None, mask=None):
-        return self.sess.run(self._value, {self.obs_ph: obs})
 
 
 class CnnPolicy(FeedForwardPolicy):
@@ -304,9 +330,10 @@ class CnnPolicy(FeedForwardPolicy):
     :param _kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, **_kwargs):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, dueling=True, is_DQN=False, 
+                                        **_kwargs):
         super(CnnPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
-                                        feature_extraction="cnn", **_kwargs)
+                                        feature_extraction="cnn", dueling=dueling, is_DQN=is_DQN, **_kwargs)
 
 
 class CnnLstmPolicy(LstmPolicy):
@@ -324,9 +351,11 @@ class CnnLstmPolicy(LstmPolicy):
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, **_kwargs):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, dueling=True, 
+                                            is_DQN=False, **_kwargs):
         super(CnnLstmPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm, reuse,
-                                            layer_norm=False, feature_extraction="cnn", **_kwargs)
+                                            layer_norm=False, feature_extraction="cnn", dueling=dueling, is_DQN=is_DQN, 
+                                            **_kwargs)
 
 
 class CnnLnLstmPolicy(LstmPolicy):
@@ -344,9 +373,11 @@ class CnnLnLstmPolicy(LstmPolicy):
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, **_kwargs):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, dueling=True, 
+                                              is_DQN=False, **_kwargs):
         super(CnnLnLstmPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm, reuse,
-                                              layer_norm=True, feature_extraction="cnn", **_kwargs)
+                                              layer_norm=True, feature_extraction="cnn", dueling=dueling, is_DQN=is_DQN,
+                                              **_kwargs)
 
 
 class MlpPolicy(FeedForwardPolicy):
@@ -363,9 +394,10 @@ class MlpPolicy(FeedForwardPolicy):
     :param _kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, **_kwargs):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, dueling=True, is_DQN=False, 
+                                        **_kwargs):
         super(MlpPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
-                                        feature_extraction="mlp", **_kwargs)
+                                        feature_extraction="mlp", dueling=dueling, is_DQN=is_DQN, **_kwargs)
 
 
 class MlpLstmPolicy(LstmPolicy):
@@ -383,9 +415,11 @@ class MlpLstmPolicy(LstmPolicy):
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, **_kwargs):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, dueling=True, 
+                                            is_DQN=False, **_kwargs):
         super(MlpLstmPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm, reuse,
-                                            layer_norm=False, feature_extraction="mlp", **_kwargs)
+                                            layer_norm=False, feature_extraction="mlp", dueling=dueling, 
+                                            is_DQN=is_DQN, **_kwargs)
 
 
 class MlpLnLstmPolicy(LstmPolicy):
@@ -403,24 +437,72 @@ class MlpLnLstmPolicy(LstmPolicy):
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, **_kwargs):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, dueling=True, 
+                                              is_DQN=False, **_kwargs):
         super(MlpLnLstmPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm, reuse,
-                                              layer_norm=True, feature_extraction="mlp", **_kwargs)
+                                              layer_norm=True, feature_extraction="mlp", dueling=dueling, 
+                                              is_DQN=is_DQN, **_kwargs)
 
+
+class LnMlpPolicy(FeedForwardPolicy):
+    """
+    Policy object that implements DQN policy, using a MLP (2 layers of 64), with layer normalisation
+
+    :param sess: (TensorFlow session) The current TensorFlow session
+    :param ob_space: (Gym Space) The observation space of the environment
+    :param ac_space: (Gym Space) The action space of the environment
+    :param n_env: (int) The number of environments to run
+    :param n_steps: (int) The number of steps to run for each environment
+    :param n_batch: (int) The number of batch to run (n_envs * n_steps)
+    :param reuse: (bool) If the policy is reusable or not
+    :param obs_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for observation placeholder
+        and the processed observation placeholder respectivly
+    :param dueling: (bool) if true double the output MLP to compute a baseline for action scores
+    :param _kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
+    """
+
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch,
+                 reuse=False, obs_phs=None, dueling=True, is_DQN=False, **_kwargs):
+        super(LnMlpPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
+                                          feature_extraction="mlp", obs_phs=obs_phs,
+                                          layer_norm=True, dueling=dueling, is_DQN=is_DQN, **_kwargs)
+
+class LnCnnPolicy(FeedForwardPolicy):
+    """
+    Policy object that implements DQN policy, using a CNN (the nature CNN), with layer normalisation
+
+    :param sess: (TensorFlow session) The current TensorFlow session
+    :param ob_space: (Gym Space) The observation space of the environment
+    :param ac_space: (Gym Space) The action space of the environment
+    :param n_env: (int) The number of environments to run
+    :param n_steps: (int) The number of steps to run for each environment
+    :param n_batch: (int) The number of batch to run (n_envs * n_steps)
+    :param reuse: (bool) If the policy is reusable or not
+    :param obs_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for observation placeholder
+        and the processed observation placeholder respectivly
+    :param dueling: (bool) if true double the output MLP to compute a baseline for action scores
+    :param _kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
+    """
+
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch,
+                 reuse=False, obs_phs=None, dueling=True, is_DQN=False, **_kwargs):
+        super(LnCnnPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
+                                          feature_extraction="cnn", obs_phs=obs_phs, dueling=dueling, is_DQN=is_DQN,
+                                          layer_norm=True, **_kwargs)
 
 _policy_registry = {
-    ActorCriticPolicy: {
-        "CnnPolicy": CnnPolicy,
-        "CnnLstmPolicy": CnnLstmPolicy,
-        "CnnLnLstmPolicy": CnnLnLstmPolicy,
-        "MlpPolicy": MlpPolicy,
-        "MlpLstmPolicy": MlpLstmPolicy,
-        "MlpLnLstmPolicy": MlpLnLstmPolicy,
-    }
+    "CnnPolicy": CnnPolicy,
+    "CnnLstmPolicy": CnnLstmPolicy,
+    "CnnLnLstmPolicy": CnnLnLstmPolicy,
+    "MlpPolicy": MlpPolicy,
+    "MlpLstmPolicy": MlpLstmPolicy,
+    "MlpLnLstmPolicy": MlpLnLstmPolicy,
+    "LnMlpPolicy": LnMlpPolicy,
+    "LnCnnPolicy": LnCnnPolicy,
 }
 
 
-def get_policy_from_name(base_policy_type, name):
+def get_policy_from_name(name):
     """
     returns the registed policy from the base type and name
 
@@ -428,12 +510,7 @@ def get_policy_from_name(base_policy_type, name):
     :param name: (str) the policy name
     :return: (base_policy_type) the policy
     """
-    if base_policy_type not in _policy_registry:
-        raise ValueError("Error: the policy type {} is not registered!".format(base_policy_type))
-    if name not in _policy_registry[base_policy_type]:
-        raise ValueError("Error: unknown policy type {}, the only registed policy type are: {}!"
-                         .format(name, list(_policy_registry[base_policy_type].keys())))
-    return _policy_registry[base_policy_type][name]
+    return _policy_registry[name]
 
 
 def register_policy(name, policy):
@@ -443,17 +520,4 @@ def register_policy(name, policy):
     :param name: (str) the policy name
     :param policy: (subclass of BasePolicy) the policy
     """
-    sub_class = None
-    for cls in BasePolicy.__subclasses__():
-        if issubclass(policy, cls):
-            sub_class = cls
-            break
-    if sub_class is None:
-        raise ValueError("Error: the policy {} is not of any known subclasses of BasePolicy!".format(policy))
-
-    if sub_class not in _policy_registry:
-        _policy_registry[sub_class] = {}
-    if name in _policy_registry[sub_class]:
-        raise ValueError("Error: the name {} is alreay registered for a different policy, will not override."
-                         .format(name))
-    _policy_registry[sub_class][name] = policy
+    _policy_registry[name] = policy

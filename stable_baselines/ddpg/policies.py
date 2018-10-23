@@ -19,9 +19,11 @@ class DDPGPolicy(BasePolicy):
     :param reuse: (bool) If the policy is reusable or not
     :param scale: (bool) whether or not to scale the input
     """
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, scale=False):
+
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, layers=None, scale=False):
         super(DDPGPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=n_lstm, reuse=reuse,
-                                         scale=scale, add_action_ph=True)
+                                         layers=layers, scale=scale)
+        self.action_ph = tf.placeholder(dtype=ac_space.dtype, shape=(None,) + ac_space.shape, name="action_ph")
         assert isinstance(ac_space, Box), "Error: the action space must be of type gym.spaces.Box"
         assert (np.abs(ac_space.low) == ac_space.high).all(), "Error: the action space low and high must be symmetric"
         self.value_fn = None
@@ -61,31 +63,8 @@ class DDPGPolicy(BasePolicy):
         """
         raise NotImplementedError
 
-    def proba_step(self, obs, state=None, mask=None):
-        """
-        Returns the action probability for a single step
 
-        :param obs: ([float] or [int]) The current observation of the environment
-        :param state: ([float]) The last states (used in recurrent policies)
-        :param mask: ([float]) The last masks (used in recurrent policies)
-        :return: ([float]) the action probability
-        """
-        raise NotImplementedError
-
-    def value(self, obs, action, state=None, mask=None):
-        """
-        Returns the value for a single step
-
-        :param obs: ([float] or [int]) The current observation of the environment
-        :param action: ([float] or [int]) The taken action
-        :param state: ([float]) The last states (used in recurrent policies)
-        :param mask: ([float]) The last masks (used in recurrent policies)
-        :return: ([float]) The associated value of the action
-        """
-        raise NotImplementedError
-
-
-class FeedForwardPolicy(DDPGPolicy):
+class DDPG_FeedForwardPolicy(DDPGPolicy):
     """
     Policy object that implements a DDPG-like actor critic, using a feed forward neural network.
 
@@ -105,19 +84,16 @@ class FeedForwardPolicy(DDPGPolicy):
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="cnn", layer_norm=False, **kwargs):
-        super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256,
-                                                reuse=reuse, scale=(feature_extraction == "cnn"))
+        
+        super(DDPG_FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256,
+                                                reuse=reuse, layers=layers, scale=(feature_extraction == "cnn"))
+
         self.layer_norm = layer_norm
         self.feature_extraction = feature_extraction
         self.cnn_kwargs = kwargs
         self.cnn_extractor = cnn_extractor
         self.reuse = reuse
         self._value = None
-        if layers is None:
-            layers = [64, 64]
-        self.layers = layers
-
-        assert len(layers) >= 1, "Error: must have at least one hidden layer for the policy."
 
         self.activ = tf.nn.relu
 
@@ -170,14 +146,8 @@ class FeedForwardPolicy(DDPGPolicy):
     def step(self, obs, state=None, mask=None):
         return self.sess.run(self.policy, {self.obs_ph: obs})
 
-    def proba_step(self, obs, state=None, mask=None):
-        return self.sess.run(self.policy, {self.obs_ph: obs})
 
-    def value(self, obs, action, state=None, mask=None):
-        return self.sess.run(self._value, {self.obs_ph: obs, self.action_ph: action})
-
-
-class CnnPolicy(FeedForwardPolicy):
+class DDPG_CnnPolicy(DDPG_FeedForwardPolicy):
     """
     Policy object that implements actor critic, using a CNN (the nature CNN)
 
@@ -192,11 +162,11 @@ class CnnPolicy(FeedForwardPolicy):
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, **_kwargs):
-        super(CnnPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
+        super(DDPG_CnnPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
                                         feature_extraction="cnn", **_kwargs)
 
 
-class LnCnnPolicy(FeedForwardPolicy):
+class DDPG_LnCnnPolicy(DDPG_FeedForwardPolicy):
     """
     Policy object that implements actor critic, using a CNN (the nature CNN), with layer normalisation
 
@@ -211,11 +181,11 @@ class LnCnnPolicy(FeedForwardPolicy):
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, **_kwargs):
-        super(LnCnnPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
+        super(DDPG_LnCnnPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
                                           feature_extraction="cnn", layer_norm=True, **_kwargs)
 
 
-class MlpPolicy(FeedForwardPolicy):
+class DDPG_MlpPolicy(DDPG_FeedForwardPolicy):
     """
     Policy object that implements actor critic, using a MLP (2 layers of 64)
 
@@ -230,11 +200,11 @@ class MlpPolicy(FeedForwardPolicy):
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, **_kwargs):
-        super(MlpPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
+        super(DDPG_MlpPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
                                         feature_extraction="mlp", **_kwargs)
 
 
-class LnMlpPolicy(FeedForwardPolicy):
+class DDPG_LnMlpPolicy(DDPG_FeedForwardPolicy):
     """
     Policy object that implements actor critic, using a MLP (2 layers of 64), with layer normalisation
 
@@ -249,11 +219,11 @@ class LnMlpPolicy(FeedForwardPolicy):
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, **_kwargs):
-        super(LnMlpPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
+        super(DDPG_LnMlpPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse,
                                           feature_extraction="mlp", layer_norm=True, **_kwargs)
 
 
-register_policy("CnnPolicy", CnnPolicy)
-register_policy("LnCnnPolicy", LnCnnPolicy)
-register_policy("MlpPolicy", MlpPolicy)
-register_policy("LnMlpPolicy", LnMlpPolicy)
+register_policy("DDPG_CnnPolicy", DDPG_CnnPolicy)
+register_policy("DDPG_LnCnnPolicy", DDPG_LnCnnPolicy)
+register_policy("DDPG_MlpPolicy", DDPG_MlpPolicy)
+register_policy("DDPG_LnMlpPolicy", DDPG_LnMlpPolicy)

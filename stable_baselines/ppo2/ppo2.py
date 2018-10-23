@@ -8,18 +8,18 @@ import numpy as np
 import tensorflow as tf
 
 from stable_baselines import logger
-from stable_baselines.common import explained_variance, ActorCriticRLModel, tf_util, SetVerbosity, TensorboardWriter
+from stable_baselines.common import explained_variance, BaseRLModel, tf_util, SetVerbosity, TensorboardWriter
 from stable_baselines.common.runners import AbstractEnvRunner
-from stable_baselines.common.policies import LstmPolicy, ActorCriticPolicy
+from stable_baselines.common.policies import LstmPolicy, BasePolicy
 from stable_baselines.a2c.utils import total_episode_reward_logger
 
 
-class PPO2(ActorCriticRLModel):
+class PPO2(BaseRLModel):
     """
     Proximal Policy Optimization algorithm (GPU version).
     Paper: https://arxiv.org/abs/1707.06347
 
-    :param policy: (ActorCriticPolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
+    :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
     :param gamma: (float) Discount factor
     :param n_steps: (int) The number of steps to run for each environment per update
@@ -99,8 +99,8 @@ class PPO2(ActorCriticRLModel):
     def setup_model(self):
         with SetVerbosity(self.verbose):
 
-            assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the PPO2 model must be " \
-                                                               "an instance of common.policies.ActorCriticPolicy."
+            assert issubclass(self.policy, BasePolicy), "Error: the input policy for the PPO2 model must be " \
+                                                               "an instance of common.policies.BasePolicy."
 
             self.n_batch = self.n_envs * self.n_steps
 
@@ -417,7 +417,7 @@ class Runner(AbstractEnvRunner):
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
-        last_values = self.model.value(self.obs, self.states, self.dones)
+        last_values = self.model.value(self.obs, state=self.states, mask=self.dones)
         # discount/bootstrap off value fn
         mb_advs = np.zeros_like(mb_rewards)
         true_reward = np.copy(mb_rewards)

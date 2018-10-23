@@ -1,15 +1,15 @@
 import gym
 
-from stable_baselines.common import ActorCriticRLModel
-from stable_baselines.common.policies import ActorCriticPolicy
+from stable_baselines.common import BaseRLModel
+from stable_baselines.common.policies import BasePolicy
 from stable_baselines.trpo_mpi import TRPO
 
 
-class GAIL(ActorCriticRLModel):
+class GAIL(BaseRLModel):
     """
     Generative Adversarial Imitation Learning (GAIL)
 
-    :param policy: (ActorCriticPolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
+    :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
     :param gamma: (float) the discount value
     :param timesteps_per_batch: (int) the number of timesteps to run per batch (horizon)
@@ -60,8 +60,8 @@ class GAIL(ActorCriticRLModel):
         self.trpo.set_env(env)
 
     def setup_model(self):
-        assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the GAIL model must be an " \
-                                                           "instance of common.policies.ActorCriticPolicy."
+        assert issubclass(self.policy, BasePolicy), "Error: the input policy for the GAIL model must be an " \
+                                                           "instance of common.policies.BasePolicy."
         assert isinstance(self.action_space, gym.spaces.Box), "Error: GAIL requires a continuous action space."
 
         self.trpo.setup_model()

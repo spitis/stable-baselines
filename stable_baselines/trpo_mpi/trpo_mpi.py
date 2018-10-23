@@ -7,25 +7,25 @@ import tensorflow as tf
 import numpy as np
 
 import stable_baselines.common.tf_util as tf_util
-from stable_baselines.common import explained_variance, zipsame, dataset, fmt_row, colorize, ActorCriticRLModel, \
+from stable_baselines.common import explained_variance, zipsame, dataset, fmt_row, colorize, BaseRLModel, \
     SetVerbosity, TensorboardWriter
 from stable_baselines import logger
 from stable_baselines.common.mpi_adam import MpiAdam
-from stable_baselines.common.cg import conjugate_gradient
-from stable_baselines.common.policies import ActorCriticPolicy
+from stable_baselines.common.math_util import conjugate_gradient
+from stable_baselines.common.policies import BasePolicy
 from stable_baselines.a2c.utils import find_trainable_variables, total_episode_reward_logger
 from stable_baselines.trpo_mpi.utils import traj_segment_generator, add_vtarg_and_adv, flatten_lists
 # from stable_baselines.gail.statistics import Stats
 
 
-class TRPO(ActorCriticRLModel):
+class TRPO(BaseRLModel):
     def __init__(self, policy, env, gamma=0.99, timesteps_per_batch=1024, max_kl=0.01, cg_iters=10, lam=0.98,
                  entcoeff=0.0, cg_damping=1e-2, vf_stepsize=3e-4, vf_iters=3, verbose=0, tensorboard_log=None,
                  _init_setup_model=True):
         """
         learns a TRPO policy using the given environment
 
-        :param policy: (ActorCriticPolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
+        :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
         :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
         :param gamma: (float) the discount value
         :param timesteps_per_batch: (int) the number of timesteps to run per batch (horizon)
@@ -101,8 +101,8 @@ class TRPO(ActorCriticRLModel):
 
         with SetVerbosity(self.verbose):
 
-            assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the TRPO model must be " \
-                                                               "an instance of common.policies.ActorCriticPolicy."
+            assert issubclass(self.policy, BasePolicy), "Error: the input policy for the TRPO model must be " \
+                                                               "an instance of common.policies.BasePolicy."
 
             self.nworkers = MPI.COMM_WORLD.Get_size()
             self.rank = MPI.COMM_WORLD.Get_rank()

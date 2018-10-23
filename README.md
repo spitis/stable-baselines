@@ -1,3 +1,11 @@
+# FORK INFO
+
+- purpose of this fork is to get HER working cleanly on top of multiple algorithms
+- refactored abstract class hierarchy from models, so now all models inherit from BaseRLModel
+- refactored policy hierarchy so that DQN and AC models use the same policies; DDPG is still separate, but there is no good reason for it to be, so maybe will be combined as well (a bit harder because of the way its currently written)
+- merged ReplayMemory of DDPG and DQN; TODO: merge HER as well
+
+
 <img src="docs/\_static/img/logo.png" align="right" width="40%"/>
 
 [![Build Status](https://travis-ci.com/hill-a/stable-baselines.svg?branch=master)](https://travis-ci.com/hill-a/stable-baselines) [![Documentation Status](https://readthedocs.org/projects/stable-baselines/badge/?version=master)](https://stable-baselines.readthedocs.io/en/master/?badge=master) [![Codacy Badge](https://api.codacy.com/project/badge/Grade/3bcb4cd6d76a4270acb16b5fe6dd9efa)](https://www.codacy.com/app/baselines_janitors/stable-baselines?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=hill-a/stable-baselines&amp;utm_campaign=Badge_Grade) [![Codacy Badge](https://api.codacy.com/project/badge/Coverage/3bcb4cd6d76a4270acb16b5fe6dd9efa)](https://www.codacy.com/app/baselines_janitors/stable-baselines?utm_source=github.com&utm_medium=referral&utm_content=hill-a/stable-baselines&utm_campaign=Badge_Coverage)

@@ -7,8 +7,8 @@ import tensorflow as tf
 
 import stable_baselines.common.tf_util as tf_utils
 from stable_baselines import logger, deepq
-from stable_baselines.deepq.replay_buffer import ReplayBuffer
-from stable_baselines.deepq.policies import FeedForwardPolicy
+from stable_baselines.common.replay_buffer import ReplayBuffer
+from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.common.schedules import LinearSchedule
 
 
@@ -36,7 +36,8 @@ def main(args):
             sess=sess
         )
         # Create the replay buffer
-        replay_buffer = ReplayBuffer(50000)
+        replay_buffer = ReplayBuffer(50000, action_shape=env.action_space.shape,
+                                                 observation_shape=env.observation_space.shape)
         # Create the schedule for exploration starting from 1 (every action is random) down to
         # 0.02 (98% of actions are selected according to values predicted by the model).
         exploration = LinearSchedule(schedule_timesteps=10000, initial_p=1.0, final_p=0.02)

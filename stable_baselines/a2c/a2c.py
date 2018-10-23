@@ -5,18 +5,18 @@ import numpy as np
 import tensorflow as tf
 
 from stable_baselines import logger
-from stable_baselines.common import explained_variance, tf_util, ActorCriticRLModel, SetVerbosity, TensorboardWriter
-from stable_baselines.common.policies import LstmPolicy, ActorCriticPolicy
+from stable_baselines.common import explained_variance, tf_util, BaseRLModel, SetVerbosity, TensorboardWriter
+from stable_baselines.common.policies import LstmPolicy, BasePolicy
 from stable_baselines.common.runners import AbstractEnvRunner
 from stable_baselines.a2c.utils import discount_with_dones, Scheduler, find_trainable_variables, mse, \
     total_episode_reward_logger
 
 
-class A2C(ActorCriticRLModel):
+class A2C(BaseRLModel):
     """
     The A2C (Advantage Actor Critic) model class, https://arxiv.org/abs/1602.01783
 
-    :param policy: (ActorCriticPolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
+    :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
     :param gamma: (float) Discount factor
     :param n_steps: (int) The number of steps to run for each environment per update
@@ -83,8 +83,8 @@ class A2C(ActorCriticRLModel):
     def setup_model(self):
         with SetVerbosity(self.verbose):
 
-            assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the A2C model must be an " \
-                                                                "instance of common.policies.ActorCriticPolicy."
+            assert issubclass(self.policy, BasePolicy), "Error: the input policy for the A2C model must be an " \
+                                                                "instance of common.policies.BasePolicy."
 
             self.graph = tf.Graph()
             with self.graph.as_default():
@@ -312,7 +312,7 @@ class A2CRunner(AbstractEnvRunner):
         mb_masks = mb_dones[:, :-1]
         mb_dones = mb_dones[:, 1:]
         true_rewards = np.copy(mb_rewards)
-        last_values = self.model.value(self.obs, self.states, self.dones).tolist()
+        last_values = self.model.value(self.obs, state=self.states, mask=self.dones).tolist()
         # discount/bootstrap off value fn
         for n, (rewards, dones, value) in enumerate(zip(mb_rewards, mb_dones, last_values)):
             rewards = rewards.tolist()

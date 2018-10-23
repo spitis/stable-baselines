@@ -126,7 +126,7 @@ def build_act(q_func, ob_space, ac_space, stochastic_ph, update_eps_ph, sess):
     """
     Creates the act function:
 
-    :param q_func: (DQNPolicy) the policy
+    :param q_func: (BasePolicy) the policy
     :param ob_space: (Gym Space) The observation space of the environment
     :param ac_space: (Gym Space) The action space of the environment
     :param stochastic_ph: (TensorFlow Tensor) the stochastic placeholder
@@ -138,7 +138,7 @@ def build_act(q_func, ob_space, ac_space, stochastic_ph, update_eps_ph, sess):
     """
     eps = tf.get_variable("eps", (), initializer=tf.constant_initializer(0))
 
-    policy = q_func(sess, ob_space, ac_space, 1, 1, None)
+    policy = q_func(sess, ob_space, ac_space, 1, 1, None, is_DQN=True)
     obs_phs = (policy.obs_ph, policy.processed_x)
     deterministic_actions = tf.argmax(policy.q_values, axis=1)
 
@@ -166,7 +166,7 @@ def build_act_with_param_noise(q_func, ob_space, ac_space, stochastic_ph, update
     """
     Creates the act function with support for parameter space noise exploration (https://arxiv.org/abs/1706.01905):
 
-    :param q_func: (DQNPolicy) the policy
+    :param q_func: (BasePolicy) the policy
     :param ob_space: (Gym Space) The observation space of the environment
     :param ac_space: (Gym Space) The action space of the environment
     :param stochastic_ph: (TensorFlow Tensor) the stochastic placeholder
@@ -193,12 +193,12 @@ def build_act_with_param_noise(q_func, ob_space, ac_space, stochastic_ph, update
                                             trainable=False)
 
     # Unmodified Q.
-    policy = q_func(sess, ob_space, ac_space, 1, 1, None)
+    policy = q_func(sess, ob_space, ac_space, 1, 1, None, is_DQN=True)
     obs_phs = (policy.obs_ph, policy.processed_x)
 
     # Perturbable Q used for the actual rollout.
     with tf.variable_scope("perturbed_model", reuse=False):
-        perturbable_policy = q_func(sess, ob_space, ac_space, 1, 1, None, obs_phs=obs_phs)
+        perturbable_policy = q_func(sess, ob_space, ac_space, 1, 1, None, obs_phs=obs_phs, is_DQN=True)
 
     def perturb_vars(original_scope, perturbed_scope):
         """
@@ -232,7 +232,7 @@ def build_act_with_param_noise(q_func, ob_space, ac_space, stochastic_ph, update
     # of the network and measures the effect of that perturbation in action space. If the perturbation
     # is too big, reduce scale of perturbation, otherwise increase.
     with tf.variable_scope("adaptive_model", reuse=False):
-        adaptive_policy = q_func(sess, ob_space, ac_space, 1, 1, None, obs_phs=obs_phs)
+        adaptive_policy = q_func(sess, ob_space, ac_space, 1, 1, None, obs_phs=obs_phs, is_DQN=True)
     perturb_for_adaption = perturb_vars(original_scope="model", perturbed_scope="adaptive_model/model")
     kl_loss = tf.reduce_sum(
         tf.nn.softmax(policy.q_values) *
@@ -324,7 +324,7 @@ def build_train(q_func, ob_space, ac_space, optimizer, sess, grad_norm_clipping=
     """
     Creates the train function:
 
-    :param q_func: (DQNPolicy) the policy
+    :param q_func: (BasePolicy) the policy
     :param ob_space: (Gym Space) The observation space of the environment
     :param ac_space: (Gym Space) The action space of the environment
     :param reuse: (bool) whether or not to reuse the graph variables
@@ -349,7 +349,7 @@ def build_train(q_func, ob_space, ac_space, optimizer, sess, grad_norm_clipping=
             optimize the error in Bellman's equation. See the top of the file for details.
         update_target: (function) copy the parameters from optimized Q function to the target Q function.
             See the top of the file for details.
-        step_model: (DQNPolicy) Policy for evaluation
+        step_model: (BasePolicy) Policy for evaluation
     """
     n_actions = ac_space.nvec if isinstance(ac_space, MultiDiscrete) else ac_space.n
     with tf.variable_scope("input", reuse=reuse):
@@ -365,12 +365,12 @@ def build_train(q_func, ob_space, ac_space, optimizer, sess, grad_norm_clipping=
 
         # q network evaluation
         with tf.variable_scope("step_model", reuse=True, custom_getter=tf_util.outer_scope_getter("step_model")):
-            step_model = q_func(sess, ob_space, ac_space, 1, 1, None, reuse=True, obs_phs=obs_phs)
+            step_model = q_func(sess, ob_space, ac_space, 1, 1, None, reuse=True, obs_phs=obs_phs, is_DQN=True)
         q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=tf.get_variable_scope().name + "/model")
         # target q network evaluation
 
         with tf.variable_scope("target_q_func", reuse=False):
-            target_policy = q_func(sess, ob_space, ac_space, 1, 1, None, reuse=False)
+            target_policy = q_func(sess, ob_space, ac_space, 1, 1, None, reuse=False, is_DQN=True)
         target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
                                                scope=tf.get_variable_scope().name + "/target_q_func")
 
@@ -379,7 +379,7 @@ def build_train(q_func, ob_space, ac_space, optimizer, sess, grad_norm_clipping=
         double_obs_ph = target_policy.obs_ph
         if double_q:
             with tf.variable_scope("double_q", reuse=True, custom_getter=tf_util.outer_scope_getter("double_q")):
-                double_policy = q_func(sess, ob_space, ac_space, 1, 1, None, reuse=True)
+                double_policy = q_func(sess, ob_space, ac_space, 1, 1, None, reuse=True, is_DQN=True)
                 double_q_values = double_policy.q_values
                 double_obs_ph = double_policy.obs_ph
 

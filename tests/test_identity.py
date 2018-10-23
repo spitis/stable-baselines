@@ -47,7 +47,7 @@ def test_identity(model_name):
         action, _ = model.predict(obs)
         obs, reward, _, _ = env.step(action)
         reward_sum += reward
-    assert reward_sum > 0.9 * n_trials
+    assert reward_sum > 0.8 * n_trials
     # Free memory
     del model, env
 
@@ -63,7 +63,7 @@ def test_identity_ddpg():
     std = 0.2
     param_noise = AdaptiveParamNoiseSpec(initial_stddev=float(std), desired_action_stddev=float(std))
 
-    model = DDPG("MlpPolicy", env, gamma=0.0, param_noise=param_noise, memory_limit=int(1e6))
+    model = DDPG("DDPG_MlpPolicy", env, gamma=0.0, param_noise=param_noise, memory_limit=int(1e6))
     model.learn(total_timesteps=20000, seed=0)
 
     n_trials = 1000
@@ -74,6 +74,6 @@ def test_identity_ddpg():
         action, _ = model.predict(obs)
         obs, reward, _, _ = env.step(action)
         reward_sum += reward
-    assert reward_sum > 0.9 * n_trials
+    assert reward_sum > 0.8 * n_trials
     # Free memory
     del model, env

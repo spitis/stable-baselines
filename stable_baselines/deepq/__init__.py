@@ -1,7 +1,8 @@
-from stable_baselines.deepq.policies import MlpPolicy, CnnPolicy, LnMlpPolicy, LnCnnPolicy
+from stable_baselines.common.policies import MlpPolicy, CnnPolicy, LnMlpPolicy, LnCnnPolicy
 from stable_baselines.deepq.build_graph import build_act, build_train  # noqa
 from stable_baselines.deepq.dqn import DQN
-from stable_baselines.deepq.replay_buffer import ReplayBuffer, PrioritizedReplayBuffer  # noqa
+from stable_baselines.common.replay_buffer import ReplayBuffer
+from stable_baselines.deepq.prioritized_replay import PrioritizedReplayBuffer  # noqa
 
 
 def wrap_atari_dqn(env):

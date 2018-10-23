@@ -4,20 +4,13 @@ import pytest
 
 from stable_baselines import A2C, ACER, ACKTR, DQN, PPO1, PPO2, TRPO, DDPG
 from stable_baselines.common.policies import FeedForwardPolicy
-from stable_baselines.deepq.policies import FeedForwardPolicy as DQNPolicy
-from stable_baselines.ddpg.policies import FeedForwardPolicy as DDPGPolicy
+from stable_baselines.ddpg.policies import DDPG_FeedForwardPolicy as DDPGPolicy
 
 N_TRIALS = 100
 
 class CustomCommonPolicy(FeedForwardPolicy):
     def __init__(self, *args, **kwargs):
         super(CustomCommonPolicy, self).__init__(*args, **kwargs,
-                                           layers=[8, 8],
-                                           feature_extraction="mlp")
-
-class CustomDQNPolicy(DQNPolicy):
-    def __init__(self, *args, **kwargs):
-        super(CustomDQNPolicy, self).__init__(*args, **kwargs,
                                            layers=[8, 8],
                                            feature_extraction="mlp")
 
@@ -32,7 +25,7 @@ MODEL_DICT = {
     'a2c': (A2C, CustomCommonPolicy),
     'acer': (ACER, CustomCommonPolicy),
     'acktr': (ACKTR, CustomCommonPolicy),
-    'dqn': (DQN, CustomDQNPolicy),
+    'dqn': (DQN, CustomCommonPolicy),
     'ddpg': (DDPG, CustomDDPGPolicy),
     'ppo1': (PPO1, CustomCommonPolicy),
     'ppo2': (PPO2, CustomCommonPolicy),

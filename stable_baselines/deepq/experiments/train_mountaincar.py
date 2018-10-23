@@ -3,7 +3,8 @@ import argparse
 import gym
 
 from stable_baselines.deepq import DQN
-from stable_baselines.deepq.policies import FeedForwardPolicy
+from stable_baselines.common.policies import FeedForwardPolicy
+
 
 
 class CustomPolicy(FeedForwardPolicy):

@@ -8,9 +8,9 @@ from stable_baselines import logger
 from stable_baselines.a2c.utils import batch_to_seq, seq_to_batch, Scheduler, find_trainable_variables, EpisodeStats, \
     get_by_index, check_shape, avg_norm, gradient_add, q_explained_variance, total_episode_reward_logger
 from stable_baselines.acer.buffer import Buffer
-from stable_baselines.common import ActorCriticRLModel, tf_util, SetVerbosity, TensorboardWriter
+from stable_baselines.common import BaseRLModel, tf_util, SetVerbosity, TensorboardWriter
 from stable_baselines.common.runners import AbstractEnvRunner
-from stable_baselines.common.policies import LstmPolicy, ActorCriticPolicy
+from stable_baselines.common.policies import LstmPolicy, BasePolicy
 
 
 def strip(var, n_envs, n_steps, flat=False):
@@ -59,11 +59,11 @@ def q_retrace(rewards, dones, q_i, values, rho_i, n_envs, n_steps, gamma):
     return qret
 
 
-class ACER(ActorCriticRLModel):
+class ACER(BaseRLModel):
     """
     The ACER (Actor-Critic with Experience Replay) model class, https://arxiv.org/abs/1611.01224
 
-    :param policy: (ActorCriticPolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
+    :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
     :param gamma: (float) The discount value
     :param n_steps: (int) The number of steps to run for each environment per update
@@ -155,8 +155,8 @@ class ACER(ActorCriticRLModel):
     def setup_model(self):
         with SetVerbosity(self.verbose):
 
-            assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the ACER model must be " \
-                                                               "an instance of common.policies.ActorCriticPolicy."
+            assert issubclass(self.policy, BasePolicy), "Error: the input policy for the ACER model must be " \
+                                                               "an instance of common.policies.BasePolicy."
 
             if isinstance(self.action_space, Discrete):
                 self.n_act = self.action_space.n
@@ -218,7 +218,7 @@ class ACER(ActorCriticRLModel):
                     if continuous:
                         value = train_model.value_fn[:, 0]
                     else:
-                        value = tf.reduce_sum(train_model.policy_proba * train_model.q_value, axis=-1)
+                        value = tf.reduce_sum(train_model.policy_proba * train_model.q_values, axis=-1)
 
                     rho, rho_i_ = None, None
                     if continuous:
@@ -250,7 +250,7 @@ class ACER(ActorCriticRLModel):
                         # in the paper
                         distribution_f, f_polyak, q_value = \
                             map(lambda variables: strip(variables, self.n_envs, self.n_steps),
-                                [train_model.policy_proba, polyak_model.policy_proba, train_model.q_value])
+                                [train_model.policy_proba, polyak_model.policy_proba, train_model.q_values])
 
                         # Get pi and q values for actions taken
                         f_i = get_by_index(distribution_f, self.action_ph)

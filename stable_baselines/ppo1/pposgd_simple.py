@@ -5,24 +5,24 @@ import tensorflow as tf
 import numpy as np
 from mpi4py import MPI
 
-from stable_baselines.common import Dataset, explained_variance, fmt_row, zipsame, ActorCriticRLModel, SetVerbosity, \
+from stable_baselines.common import Dataset, explained_variance, fmt_row, zipsame, BaseRLModel, SetVerbosity, \
     TensorboardWriter
 from stable_baselines import logger
 import stable_baselines.common.tf_util as tf_util
-from stable_baselines.common.policies import LstmPolicy, ActorCriticPolicy
+from stable_baselines.common.policies import LstmPolicy, BasePolicy
 from stable_baselines.common.mpi_adam import MpiAdam
 from stable_baselines.common.mpi_moments import mpi_moments
 from stable_baselines.trpo_mpi.utils import traj_segment_generator, add_vtarg_and_adv, flatten_lists
 from stable_baselines.a2c.utils import total_episode_reward_logger
 
 
-class PPO1(ActorCriticRLModel):
+class PPO1(BaseRLModel):
     """
     Proximal Policy Optimization algorithm (MPI version).
     Paper: https://arxiv.org/abs/1707.06347
 
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
-    :param policy: (ActorCriticPolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
+    :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, CnnLstmPolicy, ...)
     :param timesteps_per_actorbatch: (int) timesteps per actor per update
     :param clip_param: (float) clipping parameter epsilon
     :param entcoeff: (float) the entropy loss weight
@@ -176,8 +176,8 @@ class PPO1(ActorCriticRLModel):
         with SetVerbosity(self.verbose), TensorboardWriter(self.graph, self.tensorboard_log, tb_log_name) as writer:
             self._setup_learn(seed)
 
-            assert issubclass(self.policy, ActorCriticPolicy), "Error: the input policy for the PPO1 model must be " \
-                                                               "an instance of common.policies.ActorCriticPolicy."
+            assert issubclass(self.policy, BasePolicy), "Error: the input policy for the PPO1 model must be " \
+                                                               "an instance of common.policies.BasePolicy."
 
             with self.sess.as_default():
                 self.adam.sync()

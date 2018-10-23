@@ -8,7 +8,7 @@ import gym
 import tensorflow as tf
 
 from stable_baselines.common import set_global_seeds
-from stable_baselines.common.policies import LstmPolicy, get_policy_from_name, ActorCriticPolicy
+from stable_baselines.common.policies import LstmPolicy, get_policy_from_name, BasePolicy
 from stable_baselines.common.vec_env import VecEnvWrapper, VecEnv, DummyVecEnv
 from stable_baselines import logger
 
@@ -25,9 +25,9 @@ class BaseRLModel(ABC):
     :param policy_base: (BasePolicy) the base policy used by this method
     """
 
-    def __init__(self, policy, env, verbose=0, *, requires_vec_env, policy_base):
+    def __init__(self, policy, env, verbose=0, *, requires_vec_env, policy_base=BasePolicy, _init_setup_model=None):
         if isinstance(policy, str):
-            self.policy = get_policy_from_name(policy_base, policy)
+            self.policy = get_policy_from_name(policy)
         else:
             self.policy = policy
         self.env = env
@@ -37,6 +37,13 @@ class BaseRLModel(ABC):
         self.action_space = None
         self.n_envs = None
         self._vectorize_action = False
+
+        # used to be in ActorCriticRLModel
+        self.sess = None
+        self.initial_state = None
+        self.step = None
+        self.proba_step = None
+        self.params = None
 
         if env is not None:
             if isinstance(env, str):
@@ -147,7 +154,7 @@ class BaseRLModel(ABC):
         """
         pass
 
-    @abstractmethod
+
     def predict(self, observation, state=None, mask=None, deterministic=False):
         """
         Get the model's action from an observation
@@ -158,9 +165,23 @@ class BaseRLModel(ABC):
         :param deterministic: (bool) Whether or not to return deterministic actions.
         :return: (np.ndarray, np.ndarray) the model's action and the next state (used in recurrent policies)
         """
-        pass
+        if state is None:
+            state = self.initial_state
+        if mask is None:
+            mask = [False for _ in range(self.n_envs)]
+        observation = np.array(observation)
+        vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
 
-    @abstractmethod
+        observation = observation.reshape((-1,) + self.observation_space.shape)
+        actions, _, states, _ = self.step(observation, state, mask, deterministic=deterministic)
+
+        if not vectorized_env:
+            if state is not None:
+                raise ValueError("Error: The environment must be vectorized when using recurrent policies.")
+            actions = actions[0]
+
+        return actions, states
+
     def action_probability(self, observation, state=None, mask=None):
         """
         Get the model's action probability distribution from an observation
@@ -170,7 +191,22 @@ class BaseRLModel(ABC):
         :param mask: (np.ndarray) The last masks (can be None, used in recurrent policies)
         :return: (np.ndarray) the model's action probability distribution
         """
-        pass
+        if state is None:
+            state = self.initial_state
+        if mask is None:
+            mask = [False for _ in range(self.n_envs)]
+        observation = np.array(observation)
+        vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
+
+        observation = observation.reshape((-1,) + self.observation_space.shape)
+        actions_proba = self.proba_step(observation, state, mask)
+
+        if not vectorized_env:
+            if state is not None:
+                raise ValueError("Error: The environment must be vectorized when using recurrent policies.")
+            actions_proba = actions_proba[0]
+
+        return actions_proba
 
     @abstractmethod
     def save(self, save_path):
@@ -183,18 +219,21 @@ class BaseRLModel(ABC):
         raise NotImplementedError()
 
     @classmethod
-    @abstractmethod
     def load(cls, load_path, env=None, **kwargs):
-        """
-        Load the model from file
+        data, params = cls._load_from_file(load_path)
 
-        :param load_path: (str) the saved parameter location
-        :param env: (Gym Envrionment) the new environment to run the loaded model on
-            (can be None if you only need prediction from a trained model)
-        :param kwargs: extra arguments to change the model when loading
-        """
-        # data, param = cls._load_from_file(load_path)
-        raise NotImplementedError()
+        model = cls(policy=data["policy"], env=None, _init_setup_model=False)
+        model.__dict__.update(data)
+        model.__dict__.update(kwargs)
+        model.set_env(env)
+        model.setup_model()
+
+        restores = []
+        for param, loaded_p in zip(model.params, params):
+            restores.append(param.assign(loaded_p))
+        model.sess.run(restores)
+
+        return model
 
     @staticmethod
     def _save_to_file(save_path, data=None, params=None):
@@ -278,139 +317,6 @@ class BaseRLModel(ABC):
         else:
             raise ValueError("Error: Cannot determine if the observation is vectorized with the space type {}."
                              .format(observation_space))
-
-
-class ActorCriticRLModel(BaseRLModel):
-    """
-    The base class for Actor critic model
-
-    :param policy: (BasePolicy) Policy object
-    :param env: (Gym environment) The environment to learn from
-                (if registered in Gym, can be str. Can be None for loading trained models)
-    :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
-    :param policy_base: (BasePolicy) the base policy used by this method (default=ActorCriticPolicy)
-    :param requires_vec_env: (bool) Does this model require a vectorized environment
-    """
-    def __init__(self, policy, env, _init_setup_model, verbose=0, policy_base=ActorCriticPolicy,
-                 requires_vec_env=False):
-        super(ActorCriticRLModel, self).__init__(policy, env, verbose=verbose, requires_vec_env=requires_vec_env,
-                                                 policy_base=policy_base)
-
-        self.sess = None
-        self.initial_state = None
-        self.step = None
-        self.proba_step = None
-        self.params = None
-
-    @abstractmethod
-    def setup_model(self):
-        pass
-
-    @abstractmethod
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="run"):
-        pass
-
-    def predict(self, observation, state=None, mask=None, deterministic=False):
-        if state is None:
-            state = self.initial_state
-        if mask is None:
-            mask = [False for _ in range(self.n_envs)]
-        observation = np.array(observation)
-        vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
-
-        observation = observation.reshape((-1,) + self.observation_space.shape)
-        actions, _, states, _ = self.step(observation, state, mask, deterministic=deterministic)
-
-        if not vectorized_env:
-            if state is not None:
-                raise ValueError("Error: The environment must be vectorized when using recurrent policies.")
-            actions = actions[0]
-
-        return actions, states
-
-    def action_probability(self, observation, state=None, mask=None):
-        if state is None:
-            state = self.initial_state
-        if mask is None:
-            mask = [False for _ in range(self.n_envs)]
-        observation = np.array(observation)
-        vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
-
-        observation = observation.reshape((-1,) + self.observation_space.shape)
-        actions_proba = self.proba_step(observation, state, mask)
-
-        if not vectorized_env:
-            if state is not None:
-                raise ValueError("Error: The environment must be vectorized when using recurrent policies.")
-            actions_proba = actions_proba[0]
-
-        return actions_proba
-
-    @abstractmethod
-    def save(self, save_path):
-        pass
-
-    @classmethod
-    def load(cls, load_path, env=None, **kwargs):
-        data, params = cls._load_from_file(load_path)
-
-        model = cls(policy=data["policy"], env=None, _init_setup_model=False)
-        model.__dict__.update(data)
-        model.__dict__.update(kwargs)
-        model.set_env(env)
-        model.setup_model()
-
-        restores = []
-        for param, loaded_p in zip(model.params, params):
-            restores.append(param.assign(loaded_p))
-        model.sess.run(restores)
-
-        return model
-
-
-class OffPolicyRLModel(BaseRLModel):
-    """
-    The base class for off policy RL model
-
-    :param policy: (BasePolicy) Policy object
-    :param env: (Gym environment) The environment to learn from
-                (if registered in Gym, can be str. Can be None for loading trained models)
-    :param replay_buffer: (ReplayBuffer) the type of replay buffer
-    :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
-    :param requires_vec_env: (bool) Does this model require a vectorized environment
-    :param policy_base: (BasePolicy) the base policy used by this method
-    """
-
-    def __init__(self, policy, env, replay_buffer, verbose=0, *, requires_vec_env, policy_base):
-        super(OffPolicyRLModel, self).__init__(policy, env, verbose=verbose, requires_vec_env=requires_vec_env,
-                                               policy_base=policy_base)
-
-        self.replay_buffer = replay_buffer
-
-    @abstractmethod
-    def setup_model(self):
-        pass
-
-    @abstractmethod
-    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="run"):
-        pass
-
-    @abstractmethod
-    def predict(self, observation, state=None, mask=None, deterministic=False):
-        pass
-
-    @abstractmethod
-    def action_probability(self, observation, state=None, mask=None):
-        pass
-
-    @abstractmethod
-    def save(self, save_path):
-        pass
-
-    @classmethod
-    @abstractmethod
-    def load(cls, load_path, env=None, **kwargs):
-        pass
 
 
 class _UnvecWrapper(VecEnvWrapper):
