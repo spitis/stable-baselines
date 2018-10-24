@@ -114,8 +114,14 @@ class SimpleDQN(BaseRLModel):
                                                         initial_p=self.prioritized_replay_beta0,
                                                         final_p=1.0)
             else:
-                self.replay_buffer = ReplayBuffer(self.buffer_size, action_shape=self.action_space.shape,
-                                                 observation_shape=self.observation_space.shape)
+                items = [("observations0", self.observation_space.shape),\
+                        ("actions", self.action_space.shape),\
+                        ("rewards", (1,)),\
+                        ("observations1", self.observation_space.shape),\
+                        ("terminals1", (1,))]
+
+                self.replay_buffer = ReplayBuffer(self.buffer_size, items)
+
                 self.beta_schedule = None
                 
             # Create the schedule for exploration starting from 1.

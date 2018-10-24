@@ -36,8 +36,15 @@ def main(args):
             sess=sess
         )
         # Create the replay buffer
-        replay_buffer = ReplayBuffer(50000, action_shape=env.action_space.shape,
-                                                 observation_shape=env.observation_space.shape)
+
+        items = [("observations0", env.observation_space.shape), \
+                 ("actions", env.action_space.shape), \
+                 ("rewards", (1,)), \
+                 ("observations1", env.observation_space.shape), \
+                 ("terminals1", (1,))]
+
+        replay_buffer = ReplayBuffer(50000, items)
+
         # Create the schedule for exploration starting from 1 (every action is random) down to
         # 0.02 (98% of actions are selected according to values predicted by the model).
         exploration = LinearSchedule(schedule_timesteps=10000, initial_p=1.0, final_p=0.02)
