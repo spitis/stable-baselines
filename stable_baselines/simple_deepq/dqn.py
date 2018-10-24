@@ -10,37 +10,26 @@ from stable_baselines.common.policies import BasePolicy
 from stable_baselines.common.vec_env import VecEnv
 from stable_baselines.common.schedules import LinearSchedule
 from stable_baselines.common.replay_buffer import ReplayBuffer
-from stable_baselines.deepq.prioritized_replay import PrioritizedReplayBuffer  # noqa
 from stable_baselines.a2c.utils import find_trainable_variables, total_episode_reward_logger
 
-class DQN(BaseRLModel):
+class SimpleDQN(BaseRLModel):
     """
-    The DQN model class. DQN paper: https://arxiv.org/pdf/1312.5602.pdf
+    Simplified version of DQN model class. DQN paper: https://arxiv.org/pdf/1312.5602.pdf
 
     :param policy: (BasePolicy or str) The policy model to use (MlpPolicy, CnnPolicy, LnMlpPolicy, ...)
     :param env: (Gym environment or str) The environment to learn from (if registered in Gym, can be str)
     :param gamma: (float) discount factor
     :param learning_rate: (float) learning rate for adam optimizer
     :param buffer_size: (int) size of the replay buffer
-    :param exploration_fraction: (float) fraction of entire training period over which the exploration rate is
-            annealed
+    :param exploration_fraction: (float) fraction of entire training period over which gamme is annealed
     :param exploration_final_eps: (float) final value of random action probability
     :param train_freq: (int) update the model every `train_freq` steps. set to None to disable printing
     :param batch_size: (int) size of a batched sampled from replay buffer for training
     :param checkpoint_freq: (int) how often to save the model. This is so that the best version is restored at the
-            end of the training. If you do not wish to restore the best version
-            at the end of the training set this variable to None.
-    :param checkpoint_path: (str) replacement path used if you need to log to somewhere else than a temporary
-            directory.
+            end of the training. If you do not wish to restore the best version set this variable to None.
+    :param checkpoint_path: (str) replacement path used if you need to log to somewhere other than tmp directory.
     :param learning_starts: (int) how many steps of the model to collect transitions for before learning starts
     :param target_network_update_freq: (int) update the target network every `target_network_update_freq` steps.
-    :param prioritized_replay: (bool) if True prioritized replay buffer will be used.
-    :param prioritized_replay_alpha: (float) alpha parameter for prioritized replay buffer
-    :param prioritized_replay_beta0: (float) initial value of beta for prioritized replay buffer
-    :param prioritized_replay_beta_iters: (int) number of iterations over which beta will be annealed from initial
-            value to 1.0. If set to None equals to max_timesteps.
-    :param prioritized_replay_eps: (float) epsilon to add to the TD errors when updating priorities.
-    :param param_noise: (bool) Whether or not to apply noise to the parameters of the policy.
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param tensorboard_log: (str) the log location for tensorboard (if None, no logging)
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
@@ -48,25 +37,17 @@ class DQN(BaseRLModel):
 
     def __init__(self, policy, env, gamma=0.99, learning_rate=5e-4, buffer_size=50000, exploration_fraction=0.1,
                  exploration_final_eps=0.02, train_freq=1, batch_size=32, checkpoint_freq=10000, checkpoint_path=None,
-                 learning_starts=1000, target_network_update_freq=500, prioritized_replay=False,
-                 prioritized_replay_alpha=0.6, prioritized_replay_beta0=0.4, prioritized_replay_beta_iters=None,
-                 prioritized_replay_eps=1e-6, param_noise=False, verbose=0, tensorboard_log=None,
+                 learning_starts=1000, target_network_update_freq=500, verbose=0, tensorboard_log=None,
                  _init_setup_model=True):
 
         super(DQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
 
         self.checkpoint_path = checkpoint_path
-        self.param_noise = param_noise
         self.learning_starts = learning_starts
         self.train_freq = train_freq
-        self.prioritized_replay = prioritized_replay
-        self.prioritized_replay_eps = prioritized_replay_eps
         self.batch_size = batch_size
         self.target_network_update_freq = target_network_update_freq
         self.checkpoint_freq = checkpoint_freq
-        self.prioritized_replay_alpha = prioritized_replay_alpha
-        self.prioritized_replay_beta0 = prioritized_replay_beta0
-        self.prioritized_replay_beta_iters = prioritized_replay_beta_iters
         self.exploration_final_eps = exploration_final_eps
         self.exploration_fraction = exploration_fraction
         self.buffer_size = buffer_size
@@ -93,13 +74,12 @@ class DQN(BaseRLModel):
 
     def setup_model(self):
         with SetVerbosity(self.verbose):
-            assert not isinstance(self.action_space, gym.spaces.Box), \
-                "Error: DQN cannot output a gym.spaces.Box action space."
+            assert isinstance(self.action_space, gym.spaces.Discrete), \
+                "Error: SimpleDQN only supports gym.spaces.Discrete action space."
 
             self.graph = tf.Graph()
             with self.graph.as_default():
                 self.sess = tf_util.make_session(graph=self.graph)
-
                 optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
 
                 self.act, self._train_step, self.update_target, self.step_model = deepq.build_train(
@@ -109,12 +89,11 @@ class DQN(BaseRLModel):
                     optimizer=optimizer,
                     gamma=self.gamma,
                     grad_norm_clipping=10,
-                    param_noise=self.param_noise,
                     sess=self.sess
                 )
+                
                 self.proba_step = self.step_model.proba_step
-                with tf.variable_scope("deepq"):
-                    self.params = tf.trainable_variables()
+                self.params = find_trainable_variables("deepq")
 
                 # Initialize the parameters and copy them to the target network.
                 tf_util.initialize(self.sess)
@@ -138,7 +117,7 @@ class DQN(BaseRLModel):
                 self.replay_buffer = ReplayBuffer(self.buffer_size, action_shape=self.action_space.shape,
                                                  observation_shape=self.observation_space.shape)
                 self.beta_schedule = None
-
+                
             # Create the schedule for exploration starting from 1.
             self.exploration = LinearSchedule(schedule_timesteps=int(self.exploration_fraction * total_timesteps),
                                               initial_p=1.0,
@@ -154,21 +133,8 @@ class DQN(BaseRLModel):
                     callback(locals(), globals())
                 # Take action and update exploration to the newest value
                 kwargs = {}
-                if not self.param_noise:
-                    update_eps = self.exploration.value(step)
-                    update_param_noise_threshold = 0.
-                else:
-                    update_eps = 0.
-                    # Compute the threshold such that the KL divergence between perturbed and non-perturbed
-                    # policy is comparable to eps-greedy exploration with eps = exploration.value(t).
-                    # See Appendix C.1 in Parameter Space Noise for Exploration, Plappert et al., 2017
-                    # for detailed explanation.
-                    update_param_noise_threshold = \
-                        -np.log(1. - self.exploration.value(step) +
-                                self.exploration.value(step) / float(self.env.action_space.n))
-                    kwargs['reset'] = reset
-                    kwargs['update_param_noise_threshold'] = update_param_noise_threshold
-                    kwargs['update_param_noise_scale'] = True
+                update_eps = self.exploration.value(step)
+
                 with self.sess.as_default():
                     action = self.act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
                 env_action = action
@@ -275,7 +241,6 @@ class DQN(BaseRLModel):
         # params
         data = {
             "checkpoint_path": self.checkpoint_path,
-            "param_noise": self.param_noise,
             "learning_starts": self.learning_starts,
             "train_freq": self.train_freq,
             "prioritized_replay": self.prioritized_replay,

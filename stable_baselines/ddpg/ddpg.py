@@ -180,8 +180,7 @@ class DDPG(BaseRLModel):
             policy = "DDPG_" + policy
 
         # TODO: replay_buffer refactoring
-        super(DDPG, self).__init__(policy=policy, env=env, verbose=verbose, policy_base=DDPGPolicy,
-                                   requires_vec_env=False)
+        super(DDPG, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
 
         # Parameters.
         self.gamma = gamma
@@ -267,11 +266,8 @@ class DDPG(BaseRLModel):
 
     def setup_model(self):
         with SetVerbosity(self.verbose):
-
             assert isinstance(self.action_space, gym.spaces.Box), \
-                "Error: DDPG cannot output a {} action space, only spaces.Box is supported.".format(self.action_space)
-            assert issubclass(self.policy, DDPGPolicy), "Error: the input policy for the DDPG model must be " \
-                                                        "an instance of DDPGPolicy."
+                "Error: DDPG can only output a gym.spaces.Box action space."
 
             self.graph = tf.Graph()
             with self.graph.as_default():
@@ -757,7 +753,9 @@ class DDPG(BaseRLModel):
             eval_episode_rewards_history = deque(maxlen=100)
             episode_rewards_history = deque(maxlen=100)
             self.episode_reward = np.zeros((1,))
+            
             with self.sess.as_default(), self.graph.as_default():
+
                 # Prepare everything.
                 self._reset()
                 obs = self.env.reset()
@@ -783,6 +781,7 @@ class DDPG(BaseRLModel):
                 epoch_qs = []
                 epoch_episodes = 0
                 epoch = 0
+
                 while True:
                     for _ in range(log_interval):
                         # Perform rollouts.

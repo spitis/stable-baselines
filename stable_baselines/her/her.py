@@ -70,7 +70,7 @@ def make_sample_her_transitions(replay_strategy, replay_k, reward_fun):
 
 class HER(BaseRLModel):
     def __init__(self, policy, env, verbose=0, _init_setup_model=True):
-        super().__init__(policy=policy, env=env, verbose=verbose, policy_base=BasePolicy, requires_vec_env=False)
+        super().__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
 
         self.policy = policy
 

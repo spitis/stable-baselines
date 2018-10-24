@@ -191,7 +191,7 @@ def launch(env, logdir, n_epochs, num_cpu, seed, replay_strategy, policy_save_in
         'time_horizon': params['time_horizon'],
     }
 
-    for name in ['time_horizon', 'rollout_batch_size', 'gamma', 'noise_eps', 'random_eps']:
+    for name in ['time_horizon', 'rollout_batch_size', 'noise_eps', 'random_eps']:
         rollout_params[name] = params[name]
         eval_params[name] = params[name]
 

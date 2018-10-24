@@ -93,7 +93,7 @@ class RolloutWorker:
         achieved_goals[:] = self.initial_ag
 
         # generate episodes
-        obs, achieved_goals, acts, goals, successes = [], [], [], [], []
+        obs, achieved_goals_lst, acts, goals, successes = [], [], [], [], []
         info_values = [np.empty((self.time_horizon, self.rollout_batch_size, self.dims['info_' + key]), np.float32)
                        for key in self.info_keys]
         q_values = []
@@ -141,20 +141,20 @@ class RolloutWorker:
                 return self.generate_rollouts()
 
             obs.append(observations.copy())
-            achieved_goals.append(achieved_goals.copy())
+            achieved_goals_lst.append(achieved_goals.copy())
             successes.append(success.copy())
             acts.append(action.copy())
             goals.append(self.goals.copy())
             observations[...] = o_new
             achieved_goals[...] = ag_new
         obs.append(observations.copy())
-        achieved_goals.append(achieved_goals.copy())
+        achieved_goals_lst.append(achieved_goals.copy())
         self.initial_obs[:] = observations
 
         episode = dict(o=obs,
                        u=acts,
                        g=goals,
-                       ag=achieved_goals)
+                       ag=achieved_goals_lst)
         for key, value in zip(self.info_keys, info_values):
             episode['info_{}'.format(key)] = value
 

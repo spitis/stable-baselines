@@ -22,10 +22,9 @@ class BaseRLModel(ABC):
                 (if registered in Gym, can be str. Can be None for loading trained models)
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param requires_vec_env: (bool) Does this model require a vectorized environment
-    :param policy_base: (BasePolicy) the base policy used by this method
     """
 
-    def __init__(self, policy, env, verbose=0, *, requires_vec_env, policy_base=BasePolicy, _init_setup_model=None):
+    def __init__(self, policy, env, verbose=0, *, requires_vec_env, _init_setup_model=None):
         if isinstance(policy, str):
             self.policy = get_policy_from_name(policy)
         else:

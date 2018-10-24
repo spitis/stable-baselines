@@ -153,14 +153,13 @@ def simple_goal_subtract(vec_a, vec_b):
     return vec_a - vec_b
 
 
-def configure_ddpg(dims, params, reuse=False, use_mpi=True, clip_return=True):
+def configure_ddpg(dims, params, reuse=False, clip_return=True):
     """
     configure a DDPG model from parameters
 
     :param dims: ({str: int}) the dimensions
     :param params: (dict) the DDPG parameters
     :param reuse: (bool) whether or not the networks should be reused
-    :param use_mpi: (bool) whether or not to use MPI
     :param clip_return: (float) clip returns to be in [-clip_return, clip_return]
     :return: (her.DDPG) the ddpg model
     """
@@ -184,10 +183,7 @@ def configure_ddpg(dims, params, reuse=False, use_mpi=True, clip_return=True):
                         'sample_transitions': sample_her_transitions,
                         'gamma': gamma,
                         })
-    ddpg_params['info'] = {
-        'env_name': params['env_name'],
-    }
-    policy = DDPG(reuse=reuse, **ddpg_params, use_mpi=use_mpi)
+    policy = DDPG(reuse=reuse, **ddpg_params)
     return policy
 
 
