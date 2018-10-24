@@ -1,8 +1,8 @@
-from stable_baselines.simple_deepq.experiments.custom_cartpole import main as main_custom
-from stable_baselines.simple_deepq.experiments.train_cartpole import main as train_cartpole
-from stable_baselines.simple_deepq.experiments.enjoy_cartpole import main as enjoy_cartpole
-from stable_baselines.simple_deepq.experiments.train_mountaincar import main as train_mountaincar
-from stable_baselines.simple_deepq.experiments.enjoy_mountaincar import main as enjoy_mountaincar
+from stable_baselines.deepq.experiments.custom_cartpole import main as main_custom
+from stable_baselines.deepq.experiments.train_cartpole import main as train_cartpole
+from stable_baselines.deepq.experiments.enjoy_cartpole import main as enjoy_cartpole
+from stable_baselines.deepq.experiments.train_mountaincar import main as train_mountaincar
+from stable_baselines.deepq.experiments.enjoy_mountaincar import main as enjoy_mountaincar
 
 
 class DummyObject(object):

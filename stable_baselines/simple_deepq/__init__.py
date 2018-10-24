@@ -1,5 +1,4 @@
 from stable_baselines.common.policies import MlpPolicy, CnnPolicy, LnMlpPolicy, LnCnnPolicy
-from stable_baselines.simple_deepq.build_graph import build_train  # noqa
 from stable_baselines.simple_deepq.dqn import SimpleDQN
 from stable_baselines.common.replay_buffer import ReplayBuffer
 

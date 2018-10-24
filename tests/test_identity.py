@@ -25,9 +25,9 @@ LEARN_FUNC_DICT = {
                            max_kl=0.05, lam=0.7).learn(total_timesteps=10000, seed=0),
 }
 
-
+#@pytest.mark.parametrize("model_name", ['a2c', 'acer', 'acktr', 'dqn', 'ppo1', 'ppo2', 'trpo'])
 @pytest.mark.slow
-@pytest.mark.parametrize("model_name", ['a2c', 'acer', 'acktr', 'dqn', 'ppo1', 'ppo2', 'trpo'])
+@pytest.mark.parametrize("model_name", ['dqn'])
 def test_identity(model_name):
     """
     Test if the algorithm (with a given policy)

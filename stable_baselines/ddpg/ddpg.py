@@ -273,8 +273,16 @@ class DDPG(BaseRLModel):
             with self.graph.as_default():
                 self.sess = tf_util.single_threaded_session(graph=self.graph)
 
-                self.memory = self.memory_policy(limit=self.memory_limit, action_shape=self.action_space.shape,
-                                                 observation_shape=self.observation_space.shape)
+                items = [("observations0", self.observation_space.shape), \
+                         ("actions", self.action_space.shape), \
+                         ("rewards", (1,)), \
+                         ("observations1", self.observation_space.shape), \
+                         ("terminals1", (1,))]
+
+                self.memory = self.memory_policy(self.memory_limit, items)
+
+                # self.memory = self.memory_policy(limit=self.memory_limit, action_shape=self.action_space.shape,
+                #                                  observation_shape=self.observation_space.shape)
 
                 with tf.variable_scope("input", reuse=False):
                     # Observation normalization.

@@ -4,7 +4,7 @@ import tensorflow as tf
 import numpy as np
 import gym
 
-from stable_baselines import logger, simple_deepq as deepq
+from stable_baselines import logger
 from stable_baselines.common import tf_util, BaseRLModel, SetVerbosity, TensorboardWriter
 from stable_baselines.common.policies import BasePolicy
 from stable_baselines.common.vec_env import VecEnv
@@ -68,6 +68,9 @@ class SimpleDQN(BaseRLModel):
         self.summary = None
         self.episode_reward = None
 
+        self.double_q = True
+        self.grad_norm_clipping = 10.
+
         if _init_setup_model:
             self.setup_model()
 
@@ -78,19 +81,107 @@ class SimpleDQN(BaseRLModel):
             self.graph = tf.Graph()
             with self.graph.as_default():
                 self.sess = tf_util.make_session(graph=self.graph)
-                optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
+                n_actions = self.action_space.n
+    
+                with tf.variable_scope("deepq"):
 
-                self.act, self._train_step, self.update_target_network, self.step_model, self.eps_ph =\
-                    deepq.build_train(
-                        q_func=self.policy,
-                        ob_space=self.observation_space,
-                        ac_space=self.action_space,
-                        optimizer=optimizer,
-                        gamma=self.gamma,
-                        grad_norm_clipping=10,
-                        sess=self.sess
-                    )
+                    # epsilon for e-greedy exploration
+                    eps_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
 
+                    # policy function
+                    policy = self.policy(self.sess, self.observation_space, self.action_space, n_env=1, n_steps=1, n_batch=None, is_DQN=True)
+                    deterministic_actions = tf.argmax(policy.q_values, axis=1)
+
+                    batch_size = tf.shape(policy.obs_ph)[0]
+                    random_actions = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=n_actions, dtype=tf.int64)
+                    chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < eps_ph
+                    epsilon_greedy_actions = tf.where(chose_random, random_actions, deterministic_actions)
+
+                    act = epsilon_greedy_actions
+
+                    
+                    # create target q network evaluation
+                    with tf.variable_scope("target_q_func", reuse=False):
+                        target_policy = self.policy(self.sess, self.observation_space, self.action_space, 1, 1, None, reuse=False, is_DQN=True)
+
+                    # variables for each
+                    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=tf.get_variable_scope().name + "/model")
+                    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,
+                                                        scope=tf.get_variable_scope().name + "/target_q_func")
+
+                    # setup double q network
+                    # because of the outer_scope_getter, this reuses the variables in the outer scope (i.e., the main network vars)
+                    with tf.variable_scope("double_q", reuse=True, custom_getter=tf_util.outer_scope_getter("double_q")):
+                        double_policy = self.policy(self.sess, self.observation_space, self.action_space, 1, 1, None, reuse=True, 
+                                                obs_phs=(target_policy.obs_ph, target_policy.processed_x), is_DQN=True)
+                        double_q_values = double_policy.q_values
+
+                with tf.variable_scope("loss"):
+
+                    # placeholders for bellman equation
+                    act_t_ph = tf.placeholder(tf.int32, [None], name="action")
+                    rew_t_ph = tf.placeholder(tf.float32, [None], name="reward")
+                    done_mask_ph = tf.placeholder(tf.float32, [None], name="done")
+
+                    # estimated q values for given states/actions
+                    estimates = tf.reduce_sum(policy.q_values * tf.one_hot(act_t_ph, n_actions), axis=1)
+
+                    # target q values based on 1-step bellman
+                    if self.double_q:
+                        q_tp1_best_using_online_net = tf.argmax(double_q_values, axis=1)
+                        q_tp1_best = tf.reduce_sum(target_policy.q_values * tf.one_hot(q_tp1_best_using_online_net, n_actions), axis=1)
+                    else:
+                        q_tp1_best = tf.reduce_max(target_policy.q_values, axis=1)
+                    q_tp1_best_masked = (1.0 - done_mask_ph) * q_tp1_best
+                    targets = rew_t_ph + self.gamma * q_tp1_best_masked
+
+                    # td error, using huber_loss
+                    td_error = estimates - tf.stop_gradient(targets)
+                    mean_huber_loss = tf.reduce_mean(tf_util.huber_loss(td_error))
+
+                    tf.summary.scalar("td_error", tf.reduce_mean(td_error))
+                    tf.summary.histogram("td_error", td_error)
+                    tf.summary.scalar("loss", mean_huber_loss)
+
+                    # compute optimization op (potentially with gradient clipping)
+                    optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
+
+                    gradients = optimizer.compute_gradients(mean_huber_loss, var_list=q_func_vars)
+                    if self.grad_norm_clipping is not None:
+                        for i, (grad, var) in enumerate(gradients):
+                            if grad is not None:
+                                gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping), var)
+                    
+                    training_step = optimizer.apply_gradients(gradients)
+
+                with tf.name_scope('update_target_network_ops'):
+                    update_target_network = []
+                    for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name),
+                                                sorted(target_q_func_vars, key=lambda v: v.name)):
+                        update_target_network.append(var_target.assign(var))
+                    update_target_network = tf.group(*update_target_network)
+
+                with tf.variable_scope("input_info", reuse=False):
+                    tf.summary.scalar('rewards', tf.reduce_mean(rew_t_ph))
+                    tf.summary.histogram('rewards', rew_t_ph)
+                    if len(policy.obs_ph.shape) == 3:
+                        tf.summary.image('observation', policy.obs_ph)
+                    else:
+                        tf.summary.histogram('observation', policy.obs_ph)
+
+
+                self.act = act
+                self._train_step = training_step
+                self._summary_op = tf.summary.merge_all()
+                self._obs1_ph = policy.obs_ph
+                self._action_ph = act_t_ph
+                self._reward_ph = rew_t_ph
+                self._obs2_ph = target_policy.obs_ph
+                self._dones_ph = done_mask_ph
+                self.update_target_network = update_target_network
+                self.step_model = policy
+                self.eps_ph = eps_ph
+                
                 self.proba_step = self.step_model.proba_step
                 with tf.variable_scope("deepq"):
                     self.params = tf.trainable_variables()
@@ -106,9 +197,14 @@ class SimpleDQN(BaseRLModel):
             self._setup_learn(seed)
 
             # Create the replay buffer
-            self.replay_buffer = ReplayBuffer(self.buffer_size, action_shape=self.action_space.shape,
-                                                observation_shape=self.observation_space.shape)
-                
+            items = [("observations0", self.observation_space.shape),\
+                    ("actions", self.action_space.shape),\
+                    ("rewards", (1,)),\
+                    ("observations1", self.observation_space.shape),\
+                    ("terminals1", (1,))]
+
+            self.replay_buffer = ReplayBuffer(self.buffer_size, items)
+            
             # Create the schedule for exploration starting from 1.
             self.exploration = LinearSchedule(schedule_timesteps=int(self.exploration_fraction * total_timesteps),
                                               initial_p=1.0,
@@ -148,26 +244,30 @@ class SimpleDQN(BaseRLModel):
                     obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
                     rewards = np.squeeze(rewards, 1)
                     dones = np.squeeze(dones, 1)
-                    weights = np.ones_like(rewards)
-
+                    
+                    feed_dict = {
+                        self._obs1_ph : obses_t,
+                        self._action_ph : actions,
+                        self._reward_ph : rewards,
+                        self._obs2_ph : obses_tp1,
+                        self._dones_ph : dones
+                    }
                     if writer is not None:
                         # run loss backprop with summary, but once every 100 steps save the metadata
                         # (memory, compute time, ...)
-                        if (1 + step) % 100 == 0:
-                            run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-                            run_metadata = tf.RunMetadata()
-                            summary, _ = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1,
-                                                                  dones, weights, sess=self.sess, options=run_options,
-                                                                  run_metadata=run_metadata)
-                            writer.add_run_metadata(run_metadata, 'step%d' % step)
-                        else:
-                            summary, _ = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1,
-                                                                  dones, weights, sess=self.sess)
+                        #if (1 + step) % 100 == 0:
+                        #    #run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+                        #    #run_metadata = tf.RunMetadata()
+                        #    _, summary = self._train_step(obses_t, actions, rewards, obses_tp1,
+                        #                                          dones, sess=self.sess, options=run_options,
+                        #                                          run_metadata=run_metadata)
+                        #    writer.add_run_metadata(run_metadata, 'step%d' % step)
+                        #else:
+                        _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
                         writer.add_summary(summary, step)
                     else:
-                        _ = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1, dones, weights,
-                                                        sess=self.sess)
-
+                        _ = self.sess.run(self._train_step, feed_dict=feed_dict)
+        
                 if step > self.learning_starts and step % self.target_network_update_freq == 0:
                     # Update target network periodically.
                     self.sess.run(self.update_target_network)
