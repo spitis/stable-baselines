@@ -273,8 +273,6 @@ class FeedForwardPolicy(BasePolicy):
                 pi_latent = pi_h
                 vf_latent = vf_h
             
-            # for actor-critic
-            
             self.proba_distribution, self.policy, self.q_values = \
                 self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, init_scale=0.01)
 

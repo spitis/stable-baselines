@@ -22,14 +22,14 @@ class CustomDDPGPolicy(DDPGPolicy):
 
 
 MODEL_DICT = {
-    'a2c': (A2C, CustomCommonPolicy),
-    'acer': (ACER, CustomCommonPolicy),
-    'acktr': (ACKTR, CustomCommonPolicy),
+    #'a2c': (A2C, CustomCommonPolicy),
+    #'acer': (ACER, CustomCommonPolicy),
+    #'acktr': (ACKTR, CustomCommonPolicy),
     'dqn': (DQN, CustomCommonPolicy),
-    'ddpg': (DDPG, CustomDDPGPolicy),
-    'ppo1': (PPO1, CustomCommonPolicy),
-    'ppo2': (PPO2, CustomCommonPolicy),
-    'trpo': (TRPO, CustomCommonPolicy),
+    #'ddpg': (DDPG, CustomDDPGPolicy),
+    #'ppo1': (PPO1, CustomCommonPolicy),
+    #'ppo2': (PPO2, CustomCommonPolicy),
+    #'trpo': (TRPO, CustomCommonPolicy),
 }
 
 
@@ -46,6 +46,7 @@ def test_custom_policy(model_name):
             env = 'MountainCarContinuous-v0'
         else:
             env = 'CartPole-v1'
+            
         # create and train
         model = model_class(policy, env)
         model.learn(total_timesteps=100, seed=0)

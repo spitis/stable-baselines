@@ -3,7 +3,7 @@ import argparse
 import gym
 import numpy as np
 
-from stable_baselines.deepq import DQN
+from stable_baselines.simple_deepq import SimpleDQN as DQN
 
 
 def main(args):

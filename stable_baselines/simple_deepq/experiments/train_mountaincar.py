@@ -2,7 +2,7 @@ import argparse
 
 import gym
 
-from stable_baselines.deepq import DQN
+from stable_baselines.simple_deepq import SimpleDQN as DQN
 from stable_baselines.common.policies import FeedForwardPolicy
 
 
@@ -23,7 +23,6 @@ def main(args):
     """
     env = gym.make("MountainCar-v0")
 
-    # using layer norm policy here is important for parameter space noise!
     model = DQN(
         policy=CustomPolicy,
         env=env,
@@ -31,7 +30,6 @@ def main(args):
         buffer_size=50000,
         exploration_fraction=0.1,
         exploration_final_eps=0.1,
-        param_noise=True
     )
     model.learn(total_timesteps=args.max_timesteps)
 

@@ -113,8 +113,7 @@ class DQN(BaseRLModel):
                     sess=self.sess
                 )
                 self.proba_step = self.step_model.proba_step
-                with tf.variable_scope("deepq"):
-                    self.params = tf.trainable_variables()
+                self.params = find_trainable_variables("deepq")
 
                 # Initialize the parameters and copy them to the target network.
                 tf_util.initialize(self.sess)
@@ -138,7 +137,6 @@ class DQN(BaseRLModel):
                 self.replay_buffer = ReplayBuffer(self.buffer_size, action_shape=self.action_space.shape,
                                                  observation_shape=self.observation_space.shape)
                 self.beta_schedule = None
-
             # Create the schedule for exploration starting from 1.
             self.exploration = LinearSchedule(schedule_timesteps=int(self.exploration_fraction * total_timesteps),
                                               initial_p=1.0,

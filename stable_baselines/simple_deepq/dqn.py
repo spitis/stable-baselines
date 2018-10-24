@@ -4,7 +4,7 @@ import tensorflow as tf
 import numpy as np
 import gym
 
-from stable_baselines import logger, deepq
+from stable_baselines import logger, simple_deepq as deepq
 from stable_baselines.common import tf_util, BaseRLModel, SetVerbosity, TensorboardWriter
 from stable_baselines.common.policies import BasePolicy
 from stable_baselines.common.vec_env import VecEnv
@@ -40,7 +40,7 @@ class SimpleDQN(BaseRLModel):
                  learning_starts=1000, target_network_update_freq=500, verbose=0, tensorboard_log=None,
                  _init_setup_model=True):
 
-        super(DQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
+        super(SimpleDQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
 
         self.checkpoint_path = checkpoint_path
         self.learning_starts = learning_starts
@@ -59,11 +59,10 @@ class SimpleDQN(BaseRLModel):
         self.sess = None
         self._train_step = None
         self.step_model = None
-        self.update_target = None
+        self.update_target_network = None
         self.act = None
         self.proba_step = None
         self.replay_buffer = None
-        self.beta_schedule = None
         self.exploration = None
         self.params = None
         self.summary = None
@@ -73,31 +72,32 @@ class SimpleDQN(BaseRLModel):
             self.setup_model()
 
     def setup_model(self):
-        with SetVerbosity(self.verbose):
+        with SetVerbosity(self.verbose):        
             assert isinstance(self.action_space, gym.spaces.Discrete), \
                 "Error: SimpleDQN only supports gym.spaces.Discrete action space."
-
             self.graph = tf.Graph()
             with self.graph.as_default():
                 self.sess = tf_util.make_session(graph=self.graph)
                 optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
 
-                self.act, self._train_step, self.update_target, self.step_model = deepq.build_train(
-                    q_func=self.policy,
-                    ob_space=self.observation_space,
-                    ac_space=self.action_space,
-                    optimizer=optimizer,
-                    gamma=self.gamma,
-                    grad_norm_clipping=10,
-                    sess=self.sess
-                )
-                
+                self.act, self._train_step, self.update_target_network, self.step_model, self.eps_ph =\
+                    deepq.build_train(
+                        q_func=self.policy,
+                        ob_space=self.observation_space,
+                        ac_space=self.action_space,
+                        optimizer=optimizer,
+                        gamma=self.gamma,
+                        grad_norm_clipping=10,
+                        sess=self.sess
+                    )
+
                 self.proba_step = self.step_model.proba_step
-                self.params = find_trainable_variables("deepq")
+                with tf.variable_scope("deepq"):
+                    self.params = tf.trainable_variables()
 
                 # Initialize the parameters and copy them to the target network.
                 tf_util.initialize(self.sess)
-                self.update_target(sess=self.sess)
+                self.sess.run(self.update_target_network)
 
                 self.summary = tf.summary.merge_all()
 
@@ -106,17 +106,8 @@ class SimpleDQN(BaseRLModel):
             self._setup_learn(seed)
 
             # Create the replay buffer
-            if self.prioritized_replay:
-                self.replay_buffer = PrioritizedReplayBuffer(self.buffer_size, alpha=self.prioritized_replay_alpha)
-                if self.prioritized_replay_beta_iters is None:
-                    prioritized_replay_beta_iters = total_timesteps
-                    self.beta_schedule = LinearSchedule(prioritized_replay_beta_iters,
-                                                        initial_p=self.prioritized_replay_beta0,
-                                                        final_p=1.0)
-            else:
-                self.replay_buffer = ReplayBuffer(self.buffer_size, action_shape=self.action_space.shape,
-                                                 observation_shape=self.observation_space.shape)
-                self.beta_schedule = None
+            self.replay_buffer = ReplayBuffer(self.buffer_size, action_shape=self.action_space.shape,
+                                                observation_shape=self.observation_space.shape)
                 
             # Create the schedule for exploration starting from 1.
             self.exploration = LinearSchedule(schedule_timesteps=int(self.exploration_fraction * total_timesteps),
@@ -125,21 +116,17 @@ class SimpleDQN(BaseRLModel):
 
             episode_rewards = [0.0]
             obs = self.env.reset()
-            reset = True
             self.episode_reward = np.zeros((1,))
 
             for step in range(total_timesteps):
                 if callback is not None:
                     callback(locals(), globals())
                 # Take action and update exploration to the newest value
-                kwargs = {}
-                update_eps = self.exploration.value(step)
+                eps = self.exploration.value(step)
 
-                with self.sess.as_default():
-                    action = self.act(np.array(obs)[None], update_eps=update_eps, **kwargs)[0]
-                env_action = action
-                reset = False
-                new_obs, rew, done, _ = self.env.step(env_action)
+                action = self.sess.run(self.act, feed_dict = {self.step_model.obs_ph : np.array(obs)[None], 
+                    self.eps_ph: eps})[0]
+                new_obs, rew, done, _ = self.env.step(action)
                 # Store transition in the replay buffer.
                 self.replay_buffer.add(obs, action, rew, new_obs, float(done))
                 obs = new_obs
@@ -155,18 +142,13 @@ class SimpleDQN(BaseRLModel):
                     if not isinstance(self.env, VecEnv):
                         obs = self.env.reset()
                     episode_rewards.append(0.0)
-                    reset = True
 
                 if step > self.learning_starts and step % self.train_freq == 0:
                     # Minimize the error in Bellman's equation on a batch sampled from replay buffer.
-                    if self.prioritized_replay:
-                        experience = self.replay_buffer.sample(self.batch_size, beta=self.beta_schedule.value(step))
-                        (obses_t, actions, rewards, obses_tp1, dones, weights, batch_idxes) = experience
-                    else:
-                        obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
-                        rewards = np.squeeze(rewards, 1)
-                        dones = np.squeeze(dones, 1)
-                        weights, batch_idxes = np.ones_like(rewards), None
+                    obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
+                    rewards = np.squeeze(rewards, 1)
+                    dones = np.squeeze(dones, 1)
+                    weights = np.ones_like(rewards)
 
                     if writer is not None:
                         # run loss backprop with summary, but once every 100 steps save the metadata
@@ -174,25 +156,21 @@ class SimpleDQN(BaseRLModel):
                         if (1 + step) % 100 == 0:
                             run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
                             run_metadata = tf.RunMetadata()
-                            summary, td_errors = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1,
+                            summary, _ = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1,
                                                                   dones, weights, sess=self.sess, options=run_options,
                                                                   run_metadata=run_metadata)
                             writer.add_run_metadata(run_metadata, 'step%d' % step)
                         else:
-                            summary, td_errors = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1,
+                            summary, _ = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1,
                                                                   dones, weights, sess=self.sess)
                         writer.add_summary(summary, step)
                     else:
-                        _, td_errors = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1, dones, weights,
+                        _ = self._train_step(obses_t, actions, rewards, obses_tp1, obses_tp1, dones, weights,
                                                         sess=self.sess)
-
-                    if self.prioritized_replay:
-                        new_priorities = np.abs(td_errors) + self.prioritized_replay_eps
-                        self.replay_buffer.update_priorities(batch_idxes, new_priorities)
 
                 if step > self.learning_starts and step % self.target_network_update_freq == 0:
                     # Update target network periodically.
-                    self.update_target(sess=self.sess)
+                    self.sess.run(self.update_target_network)
 
                 if len(episode_rewards[-101:-1]) == 0:
                     mean_100ep_reward = -np.inf
@@ -243,14 +221,9 @@ class SimpleDQN(BaseRLModel):
             "checkpoint_path": self.checkpoint_path,
             "learning_starts": self.learning_starts,
             "train_freq": self.train_freq,
-            "prioritized_replay": self.prioritized_replay,
-            "prioritized_replay_eps": self.prioritized_replay_eps,
             "batch_size": self.batch_size,
             "target_network_update_freq": self.target_network_update_freq,
             "checkpoint_freq": self.checkpoint_freq,
-            "prioritized_replay_alpha": self.prioritized_replay_alpha,
-            "prioritized_replay_beta0": self.prioritized_replay_beta0,
-            "prioritized_replay_beta_iters": self.prioritized_replay_beta_iters,
             "exploration_final_eps": self.exploration_final_eps,
             "exploration_fraction": self.exploration_fraction,
             "learning_rate": self.learning_rate,

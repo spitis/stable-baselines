@@ -1,7 +1,7 @@
 import gym
 
-from stable_baselines import deepq
-from stable_baselines.deepq import DQN
+from stable_baselines import simple_deepq as deepq
+from stable_baselines.simple_deepq import SimpleDQN as DQN
 
 
 def main():
