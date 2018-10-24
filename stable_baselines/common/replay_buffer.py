@@ -1,4 +1,5 @@
 import numpy as np
+from collections import OrderedDict
 
 class RingBuffer(object):
     """This is a collections.deque in numpy, with pre-allocated memory"""
@@ -65,57 +66,53 @@ def array_min2d(arr):
 """
 
 class ReplayBuffer(object):
-    def __init__(self, limit, action_shape, observation_shape):
+    def __init__(self, limit, item_shape):
         """
         The replay buffer object
 
         :param limit: (int) the max number of transitions to store
-        :param action_shape: (tuple) the action shape
-        :param observation_shape: (tuple) the observation shape
+        :param item_shape: a list of tuples of (str) item name and (tuple) the shape for item
+            Ex: [("observations0", env.observation_space.shape),\
+                ("actions",env.action_space.shape),\
+                ("rewards", (1,)),\
+                ("observations1",env.observation_space.shape ),\
+                ("terminals1", (1,))]
         """
         self.limit = limit
 
-        self.observations0 = RingBuffer(limit, shape=observation_shape)
-        self.actions = RingBuffer(limit, shape=action_shape)
-        self.rewards = RingBuffer(limit, shape=(1,))
-        self.observations1 = RingBuffer(limit, shape=observation_shape)
-        self.terminals1 = RingBuffer(limit, shape=(1,))
+        self.items = []
+
+        for name, shape in item_shape:
+            self.items.append((name, RingBuffer(limit, shape=shape)))
 
     def sample(self, batch_size):
         """
         sample a random batch from the buffer
 
         :param batch_size: (int) the number of element to sample for the batch
-        :return: (dict) the sampled batch
+        :return: (list) the sampled batch
         """
         # Draw such that we always have a proceeding element.
-        batch_idxs = np.random.randint(low=1, high=len(self.observations0) - 1, size=batch_size)
+        batch_idxs = np.random.randint(low=1, high=(self.size - 1), size=batch_size)
 
-        obs0s = self.observations0.get_batch(batch_idxs)
-        actions = self.actions.get_batch(batch_idxs)
-        rewards = self.rewards.get_batch(batch_idxs)
-        obs1s = self.observations1.get_batch(batch_idxs)
-        dones = self.terminals1.get_batch(batch_idxs)
+        transition = []
+        for name, buf in self.items:
+            item = buf.get_batch(batch_idxs)
+            transition.append(item)
 
-        return obs0s, actions, rewards, obs1s, dones
+        return transition
 
-    def add(self, obs0, action, reward, obs1, terminal1):
+    def add(self, *items):
         """
         Append a transition to the buffer
 
-        :param obs0: ([float] or [int]) the last observation
-        :param action: ([float]) the action
-        :param reward: (float] the reward
-        :param obs1: ([float] or [int]) the current observation
-        :param terminal1: (bool) is the episode done
-        :param training: (bool) is the RL model training or not
+        :param items: a list of values for the transition to append to the replay buffer,
+            in the item order that we initialized the ReplayBuffer with.
         """
-        self.observations0.append(obs0)
-        self.actions.append(action)
-        self.rewards.append(reward)
-        self.observations1.append(obs1)
-        self.terminals1.append(terminal1)
+        for i, value in enumerate(items):
+            self.items[i][1].append(value)
 
     @property
     def size(self):
-        return len(self.observations0)
+        # Get the size of the RingBuffer on the first item type
+        return len(self.items[0][1])
