@@ -77,7 +77,7 @@ class DQN(BaseRLModel):
         self.graph = None
         self.sess = None
         self._train_step = None
-        self.step_model = None
+        self.model = None
         self.update_target = None
         self.act = None
         self.proba_step = None
@@ -89,9 +89,9 @@ class DQN(BaseRLModel):
         self.episode_reward = None
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
-    def setup_model(self):
+    def _setup_model(self):
         with SetVerbosity(self.verbose):
             assert not isinstance(self.action_space, gym.spaces.Box), \
                 "Error: DQN cannot output a gym.spaces.Box action space."
@@ -102,7 +102,7 @@ class DQN(BaseRLModel):
 
                 optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
 
-                self.act, self._train_step, self.update_target, self.step_model = deepq.build_train(
+                self.act, self._train_step, self.update_target, self.model = deepq.build_train(
                     q_func=self.policy,
                     ob_space=self.observation_space,
                     ac_space=self.action_space,
@@ -112,7 +112,7 @@ class DQN(BaseRLModel):
                     param_noise=self.param_noise,
                     sess=self.sess
                 )
-                self.proba_step = self.step_model.proba_step
+                self.proba_step = self.model.proba_step
                 self.params = find_trainable_variables("deepq")
 
                 # Initialize the parameters and copy them to the target network.
@@ -253,7 +253,7 @@ class DQN(BaseRLModel):
 
         observation = observation.reshape((-1,) + self.observation_space.shape)
         with self.sess.as_default():
-            actions, _, _, _ = self.step_model.step(observation, deterministic=deterministic, only_action=True)
+            actions, _, _, _ = self.model.step(observation, deterministic=deterministic, only_action=True)
 
         if not vectorized_env:
             actions = actions[0]

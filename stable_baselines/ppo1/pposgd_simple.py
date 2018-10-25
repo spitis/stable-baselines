@@ -60,7 +60,7 @@ class PPO1(BaseRLModel):
 
         self.graph = None
         self.sess = None
-        self.policy_pi = None
+        self.model = None
         self.loss_names = None
         self.lossandgrad = None
         self.adam = None
@@ -74,9 +74,9 @@ class PPO1(BaseRLModel):
         self.episode_reward = None
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
-    def setup_model(self):
+    def _setup_model(self):
         with SetVerbosity(self.verbose):
 
             self.graph = tf.Graph()
@@ -84,7 +84,7 @@ class PPO1(BaseRLModel):
                 self.sess = tf_util.single_threaded_session(graph=self.graph)
 
                 # Construct network for new policy
-                self.policy_pi = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
+                self.model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                              None, reuse=False)
 
                 # Network for old policy
@@ -105,17 +105,17 @@ class PPO1(BaseRLModel):
                     # Annealed cliping parameter epislon
                     clip_param = self.clip_param * lrmult
 
-                    obs_ph = self.policy_pi.obs_ph
-                    action_ph = self.policy_pi.pdtype.sample_placeholder([None])
+                    obs_ph = self.model.obs_ph
+                    action_ph = self.model.pdtype.sample_placeholder([None])
 
-                    kloldnew = old_pi.proba_distribution.kl(self.policy_pi.proba_distribution)
-                    ent = self.policy_pi.proba_distribution.entropy()
+                    kloldnew = old_pi.proba_distribution.kl(self.model.proba_distribution)
+                    ent = self.model.proba_distribution.entropy()
                     meankl = tf.reduce_mean(kloldnew)
                     meanent = tf.reduce_mean(ent)
                     pol_entpen = (-self.entcoeff) * meanent
 
                     # pnew / pold
-                    ratio = tf.exp(self.policy_pi.proba_distribution.logp(action_ph) -
+                    ratio = tf.exp(self.model.proba_distribution.logp(action_ph) -
                                    old_pi.proba_distribution.logp(action_ph))
 
                     # surrogate from conservative policy iteration
@@ -124,7 +124,7 @@ class PPO1(BaseRLModel):
 
                     # PPO's pessimistic surrogate (L^CLIP)
                     pol_surr = - tf.reduce_mean(tf.minimum(surr1, surr2))
-                    vf_loss = tf.reduce_mean(tf.square(self.policy_pi.value_fn[:, 0] - ret))
+                    vf_loss = tf.reduce_mean(tf.square(self.model.value_fn[:, 0] - ret))
                     total_loss = pol_surr + pol_entpen + vf_loss
                     losses = [pol_surr, pol_entpen, vf_loss, meankl, meanent]
                     self.loss_names = ["pol_surr", "pol_entpen", "vf_loss", "kl", "ent"]
@@ -159,9 +159,9 @@ class PPO1(BaseRLModel):
                     else:
                         tf.summary.histogram('observation', obs_ph)
 
-                self.step = self.policy_pi.step
-                self.proba_step = self.policy_pi.proba_step
-                self.initial_state = self.policy_pi.initial_state
+                self.step = self.model.step
+                self.proba_step = self.model.proba_step
+                self.initial_state = self.model.initial_state
 
                 tf_util.initialize(sess=self.sess)
 
@@ -183,7 +183,7 @@ class PPO1(BaseRLModel):
                 self.adam.sync()
 
                 # Prepare for rollouts
-                seg_gen = traj_segment_generator(self.policy_pi, self.env, self.timesteps_per_actorbatch)
+                seg_gen = traj_segment_generator(self.model, self.env, self.timesteps_per_actorbatch)
 
                 episodes_so_far = 0
                 timesteps_so_far = 0

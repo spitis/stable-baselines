@@ -1,6 +1,6 @@
 import pytest
 
-from stable_baselines import A2C, ACER, ACKTR, DQN, DDPG, PPO1, PPO2, TRPO
+from stable_baselines import A2C, ACER, ACKTR, DQN, SimpleDQN, DDPG, PPO1, PPO2, TRPO
 from stable_baselines.ddpg import AdaptiveParamNoiseSpec
 from stable_baselines.common.identity_env import IdentityEnv, IdentityEnvBox
 from stable_baselines.common.vec_env import DummyVecEnv
@@ -13,6 +13,7 @@ LEARN_FUNC_DICT = {
     'acer': lambda e: ACER(policy="MlpPolicy", env=e).learn(total_timesteps=1000),
     'acktr': lambda e: ACKTR(policy="MlpPolicy", env=e).learn(total_timesteps=1000),
     'dqn': lambda e: DQN(policy="MlpPolicy", env=e).learn(total_timesteps=1000),
+    'simple_dqn': lambda e: SimpleDQN(policy="MlpPolicy", env=e).learn(total_timesteps=1000),
     'ddpg': lambda e: DDPG(policy="DDPG_MlpPolicy", env=e, param_noise=PARAM_NOISE_DDPG).learn(total_timesteps=1000),
     'ppo1': lambda e: PPO1(policy="MlpPolicy", env=e).learn(total_timesteps=1000),
     'ppo2': lambda e: PPO2(policy="MlpPolicy", env=e).learn(total_timesteps=1000),
@@ -21,7 +22,7 @@ LEARN_FUNC_DICT = {
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("model_name", ['a2c', 'acer', 'acktr', 'dqn', 'ppo1', 'ppo2', 'trpo'])
+@pytest.mark.parametrize("model_name", ['a2c', 'acer', 'acktr', 'dqn', 'simple_dqn', 'ppo1', 'ppo2', 'trpo'])
 def test_identity(model_name):
     """
     Test if the algorithm (with a given policy)

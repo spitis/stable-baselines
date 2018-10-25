@@ -53,18 +53,18 @@ class GAIL(BaseRLModel):
         self.trpo.adversary_entcoeff = adversary_entcoeff
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
     def set_env(self, env):
         super().set_env(env)
         self.trpo.set_env(env)
 
-    def setup_model(self):
+    def _setup_model(self):
         assert issubclass(self.policy, BasePolicy), "Error: the input policy for the GAIL model must be an " \
                                                            "instance of common.policies.BasePolicy."
         assert isinstance(self.action_space, gym.spaces.Box), "Error: GAIL requires a continuous action space."
 
-        self.trpo.setup_model()
+        self.trpo._setup_model()
 
     def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="GAIL"):
         self.trpo.learn(total_timesteps, callback, seed, log_interval, tb_log_name)
@@ -87,7 +87,7 @@ class GAIL(BaseRLModel):
         model.trpo.__dict__.update(data)
         model.trpo.__dict__.update(kwargs)
         model.set_env(env)
-        model.setup_model()
+        model._setup_model()
 
         restores = []
         for param, loaded_p in zip(model.trpo.params, params):

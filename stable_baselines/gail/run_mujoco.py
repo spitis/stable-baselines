@@ -168,7 +168,7 @@ def train(env, seed, policy_fn, reward_giver, dataset, algo, g_step, d_step, pol
         model.d_step = d_step
         model.task_name = task_name
         model.using_gail = True
-        model.setup_model()
+        model._setup_model()
 
         model.learn(total_timesteps=num_timesteps)
     else:

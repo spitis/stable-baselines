@@ -67,7 +67,7 @@ class A2C(BaseRLModel):
         self.params = None
         self.apply_backprop = None
         self.train_model = None
-        self.step_model = None
+        self.model = None
         self.step = None
         self.proba_step = None
         self.value = None
@@ -78,9 +78,9 @@ class A2C(BaseRLModel):
 
         # if we are loading, it is possible the environment is not known, however the obs and action space are known
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
-    def setup_model(self):
+    def _setup_model(self):
         with SetVerbosity(self.verbose):
 
             assert issubclass(self.policy, BasePolicy), "Error: the input policy for the A2C model must be an " \
@@ -98,7 +98,7 @@ class A2C(BaseRLModel):
                     n_batch_step = self.n_envs
                     n_batch_train = self.n_envs * self.n_steps
 
-                step_model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
+                model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                          n_batch_step, reuse=False)
 
                 with tf.variable_scope("train_model", reuse=True,
@@ -146,11 +146,11 @@ class A2C(BaseRLModel):
                 self.apply_backprop = trainer.apply_gradients(grads)
 
                 self.train_model = train_model
-                self.step_model = step_model
-                self.step = step_model.step
-                self.proba_step = step_model.proba_step
-                self.value = step_model.value
-                self.initial_state = step_model.initial_state
+                self.model = model
+                self.step = model.step
+                self.proba_step = model.proba_step
+                self.value = model.value
+                self.initial_state = model.initial_state
                 tf.global_variables_initializer().run(session=self.sess)
 
                 self.summary = tf.summary.merge_all()

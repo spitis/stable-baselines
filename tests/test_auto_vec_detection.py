@@ -1,14 +1,14 @@
 import pytest
 import numpy as np
 
-from stable_baselines import A2C, ACER, ACKTR, DDPG, DQN, PPO1, PPO2, TRPO
+from stable_baselines import A2C, ACER, ACKTR, DDPG, DQN, SimpleDQN, PPO1, PPO2, TRPO
 from stable_baselines.common.vec_env import DummyVecEnv
 from stable_baselines.common.identity_env import IdentityEnv, IdentityEnvBox, IdentityEnvMultiBinary, \
     IdentityEnvMultiDiscrete
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("model_class", [A2C, ACER, ACKTR, DQN, PPO1, PPO2, TRPO])
+@pytest.mark.parametrize("model_class", [A2C, ACER, ACKTR, DQN, SimpleDQN, PPO1, PPO2, TRPO])
 def test_identity(model_class):
     """
     test the Disrete environment vectorisation detection

@@ -132,7 +132,7 @@ class ACER(BaseRLModel):
         self.run_ops = None
         self.names_ops = None
         self.train_model = None
-        self.step_model = None
+        self.model = None
         self.step = None
         self.proba_step = None
         self.initial_state = None
@@ -142,7 +142,7 @@ class ACER(BaseRLModel):
         self.episode_reward = None
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
     def set_env(self, env):
         if env is not None:
@@ -152,7 +152,7 @@ class ACER(BaseRLModel):
 
         super().set_env(env)
 
-    def setup_model(self):
+    def _setup_model(self):
         with SetVerbosity(self.verbose):
 
             assert issubclass(self.policy, BasePolicy), "Error: the input policy for the ACER model must be " \
@@ -179,7 +179,7 @@ class ACER(BaseRLModel):
                     n_batch_step = self.n_envs
                 n_batch_train = self.n_envs * (self.n_steps + 1)
 
-                step_model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
+                model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                          n_batch_step, reuse=False)
 
                 self.params = find_trainable_variables("model")
@@ -391,10 +391,10 @@ class ACER(BaseRLModel):
                                                   'avg_norm_g', 'avg_norm_k_dot_g', 'avg_norm_adj']
 
                 self.train_model = train_model
-                self.step_model = step_model
-                self.step = step_model.step
-                self.proba_step = step_model.proba_step
-                self.initial_state = step_model.initial_state
+                self.model = model
+                self.step = model.step
+                self.proba_step = model.proba_step
+                self.initial_state = model.initial_state
 
                 tf.global_variables_initializer().run(session=self.sess)
 

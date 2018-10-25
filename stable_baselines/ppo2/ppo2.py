@@ -84,7 +84,7 @@ class PPO2(BaseRLModel):
         self._train = None
         self.loss_names = None
         self.train_model = None
-        self.act_model = None
+        self.model = None
         self.step = None
         self.proba_step = None
         self.value = None
@@ -94,9 +94,9 @@ class PPO2(BaseRLModel):
         self.episode_reward = None
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
-    def setup_model(self):
+    def _setup_model(self):
         with SetVerbosity(self.verbose):
 
             assert issubclass(self.policy, BasePolicy), "Error: the input policy for the PPO2 model must be " \
@@ -120,7 +120,7 @@ class PPO2(BaseRLModel):
                     n_batch_step = self.n_envs
                     n_batch_train = self.n_batch // self.nminibatches
 
-                act_model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
+                model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                         n_batch_step, reuse=False)
                 with tf.variable_scope("train_model", reuse=True,
                                        custom_getter=tf_util.outer_scope_getter("train_model")):
@@ -192,11 +192,11 @@ class PPO2(BaseRLModel):
                         tf.summary.histogram('observation', train_model.obs_ph)
 
                 self.train_model = train_model
-                self.act_model = act_model
-                self.step = act_model.step
-                self.proba_step = act_model.proba_step
-                self.value = act_model.value
-                self.initial_state = act_model.initial_state
+                self.model = model
+                self.step = model.step
+                self.proba_step = model.proba_step
+                self.value = model.value
+                self.initial_state = model.initial_state
                 tf.global_variables_initializer().run(session=self.sess)  # pylint: disable=E1101
 
                 self.summary = tf.summary.merge_all()

@@ -349,7 +349,7 @@ def build_train(q_func, ob_space, ac_space, optimizer, sess, grad_norm_clipping=
             optimize the error in Bellman's equation. See the top of the file for details.
         update_target: (function) copy the parameters from optimized Q function to the target Q function.
             See the top of the file for details.
-        step_model: (BasePolicy) Policy for evaluation
+        model: (BasePolicy) Policy for evaluation
     """
     n_actions = ac_space.nvec if isinstance(ac_space, MultiDiscrete) else ac_space.n
     with tf.variable_scope("input", reuse=reuse):
@@ -364,8 +364,8 @@ def build_train(q_func, ob_space, ac_space, optimizer, sess, grad_norm_clipping=
             act_f, obs_phs = build_act(q_func, ob_space, ac_space, stochastic_ph, update_eps_ph, sess)
 
         # q network evaluation
-        with tf.variable_scope("step_model", reuse=True, custom_getter=tf_util.outer_scope_getter("step_model")):
-            step_model = q_func(sess, ob_space, ac_space, 1, 1, None, reuse=True, obs_phs=obs_phs, is_DQN=True)
+        with tf.variable_scope("model", reuse=True, custom_getter=tf_util.outer_scope_getter("model")):
+            model = q_func(sess, ob_space, ac_space, 1, 1, None, reuse=True, obs_phs=obs_phs, is_DQN=True)
         q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=tf.get_variable_scope().name + "/model")
         # target q network evaluation
 
@@ -391,7 +391,7 @@ def build_train(q_func, ob_space, ac_space, optimizer, sess, grad_norm_clipping=
         importance_weights_ph = tf.placeholder(tf.float32, [None], name="weight")
 
         # q scores for actions which we know were selected in the given state.
-        q_t_selected = tf.reduce_sum(step_model.q_values * tf.one_hot(act_t_ph, n_actions), axis=1)
+        q_t_selected = tf.reduce_sum(model.q_values * tf.one_hot(act_t_ph, n_actions), axis=1)
 
         # compute estimate of best possible value starting from state at t + 1
         if double_q:
@@ -457,4 +457,4 @@ def build_train(q_func, ob_space, ac_space, optimizer, sess, grad_norm_clipping=
     )
     update_target = tf_util.function([], [], updates=[update_target_expr])
 
-    return act_f, train, update_target, step_model
+    return act_f, train, update_target, model

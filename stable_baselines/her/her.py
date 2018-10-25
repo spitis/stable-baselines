@@ -78,9 +78,9 @@ class HER(BaseRLModel):
         self.graph = None
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
-    def setup_model(self):
+    def _setup_model(self):
         with SetVerbosity(self.verbose):
 
             assert isinstance(self.action_space, gym.spaces.Box), \

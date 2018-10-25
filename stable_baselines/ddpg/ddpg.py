@@ -262,9 +262,9 @@ class DDPG(BaseRLModel):
         self.tb_seen_steps = None
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
-    def setup_model(self):
+    def _setup_model(self):
         with SetVerbosity(self.verbose):
             assert isinstance(self.action_space, gym.spaces.Box), \
                 "Error: DDPG can only output a gym.spaces.Box action space."

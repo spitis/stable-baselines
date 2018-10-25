@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from stable_baselines import A2C, ACER, ACKTR, DQN, PPO1, PPO2, TRPO, DDPG
+from stable_baselines import A2C, ACER, ACKTR, DQN, SimpleDQN, PPO1, PPO2, TRPO, DDPG
 from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.ddpg.policies import DDPG_FeedForwardPolicy as DDPGPolicy
 
@@ -22,14 +22,15 @@ class CustomDDPGPolicy(DDPGPolicy):
 
 
 MODEL_DICT = {
-    #'a2c': (A2C, CustomCommonPolicy),
-    #'acer': (ACER, CustomCommonPolicy),
-    #'acktr': (ACKTR, CustomCommonPolicy),
+    'a2c': (A2C, CustomCommonPolicy),
+    'acer': (ACER, CustomCommonPolicy),
+    'acktr': (ACKTR, CustomCommonPolicy),
     'dqn': (DQN, CustomCommonPolicy),
-    #'ddpg': (DDPG, CustomDDPGPolicy),
-    #'ppo1': (PPO1, CustomCommonPolicy),
-    #'ppo2': (PPO2, CustomCommonPolicy),
-    #'trpo': (TRPO, CustomCommonPolicy),
+    'simple_dqn': (SimpleDQN, CustomCommonPolicy),
+    'ddpg': (DDPG, CustomDDPGPolicy),
+    'ppo1': (PPO1, CustomCommonPolicy),
+    'ppo2': (PPO2, CustomCommonPolicy),
+    'trpo': (TRPO, CustomCommonPolicy),
 }
 
 

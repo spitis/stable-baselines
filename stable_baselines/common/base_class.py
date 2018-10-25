@@ -11,6 +11,7 @@ from stable_baselines.common import set_global_seeds
 from stable_baselines.common.policies import LstmPolicy, get_policy_from_name, BasePolicy
 from stable_baselines.common.vec_env import VecEnvWrapper, VecEnv, DummyVecEnv
 from stable_baselines import logger
+from stable_baselines.a2c.utils import total_episode_reward_logger
 
 
 class BaseRLModel(ABC):
@@ -36,13 +37,23 @@ class BaseRLModel(ABC):
         self.action_space = None
         self.n_envs = None
         self._vectorize_action = False
+        self.model = None # This is the instatiated policy object, i.e., self.model = self.policy(...)
 
         # used to be in ActorCriticRLModel
         self.sess = None
         self.initial_state = None
-        self.step = None
-        self.proba_step = None
+        self.step = lambda: None
+        self.proba_step = lambda: None
         self.params = None
+
+
+        # For the SimpleRLModel subclass (yes it should be there, but will eventually be merged anyways)
+        self.exploration = None
+        self.task_step = None
+        self.global_step = None
+        self.graph = None
+        self.tensorboard_log = None
+        
 
         if env is not None:
             if isinstance(env, str):
@@ -120,7 +131,7 @@ class BaseRLModel(ABC):
         self.env = env
 
     @abstractmethod
-    def setup_model(self):
+    def _setup_model(self):
         """
         Create all the functions and tensorflow graphs necessary to train the model
         """
@@ -153,7 +164,6 @@ class BaseRLModel(ABC):
         """
         pass
 
-
     def predict(self, observation, state=None, mask=None, deterministic=False):
         """
         Get the model's action from an observation
@@ -168,11 +178,12 @@ class BaseRLModel(ABC):
             state = self.initial_state
         if mask is None:
             mask = [False for _ in range(self.n_envs)]
+            
         observation = np.array(observation)
         vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
 
         observation = observation.reshape((-1,) + self.observation_space.shape)
-        actions, _, states, _ = self.step(observation, state, mask, deterministic=deterministic)
+        actions, _, states, _ = self.model.step(observation, state, mask, deterministic=deterministic)
 
         if not vectorized_env:
             if state is not None:
@@ -198,7 +209,7 @@ class BaseRLModel(ABC):
         vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
 
         observation = observation.reshape((-1,) + self.observation_space.shape)
-        actions_proba = self.proba_step(observation, state, mask)
+        actions_proba = self.model.proba_step(observation, state, mask)
 
         if not vectorized_env:
             if state is not None:
@@ -225,7 +236,7 @@ class BaseRLModel(ABC):
         model.__dict__.update(data)
         model.__dict__.update(kwargs)
         model.set_env(env)
-        model.setup_model()
+        model._setup_model()
 
         restores = []
         for param, loaded_p in zip(model.params, params):
@@ -317,6 +328,80 @@ class BaseRLModel(ABC):
             raise ValueError("Error: Cannot determine if the observation is vectorized with the space type {}."
                              .format(observation_space))
 
+
+class SimpleRLModel(BaseRLModel):
+
+    @abstractmethod
+    def _setup_model(self):
+        """Create tensorflow graph / training ops"""
+        pass
+
+    @abstractmethod
+    def _setup_new_task(self, total_timesteps):
+        pass
+
+    @abstractmethod
+    def _get_action_for_single_obs(self, obs):
+        pass
+
+    @abstractmethod
+    def _process_experience(self, obs, action, rew, new_obs, done):
+        pass
+
+    def learn(self, total_timesteps, callback=None, seed=None, log_interval=100, tb_log_name="DQN"):
+        with SetVerbosity(self.verbose), TensorboardWriter(self.graph, self.tensorboard_log, tb_log_name) as writer:
+            self._setup_learn(seed)
+            self._setup_new_task(total_timesteps=total_timesteps)
+
+            obs = self.env.reset()
+            
+            # probably shouldn't have two different bookkeeping mechanisms here, but whatever
+            episode_reward = np.zeros((1,))
+            episode_rewards = [0.0]
+
+            for step in range(total_timesteps):
+                if callback is not None:
+                    callback(locals(), globals())
+
+                # Take action and update exploration to the newest value
+                action = self._get_action_for_single_obs(obs)
+                new_obs, rew, done, _ = self.env.step(action)
+
+                # Do the learning fetch tensorboard summaries
+                summary = self._process_experience(obs, action, rew, new_obs, done)
+
+                # Do some bookkeeping
+                if writer is not None and summary is not None:
+                    writer.add_summary(summary, self.global_step)
+                    ep_rew = np.array([rew]).reshape((1, -1))
+                    ep_done = np.array([done]).reshape((1, -1))
+                    episode_reward = total_episode_reward_logger(episode_reward, ep_rew, ep_done, writer, step)
+
+                episode_rewards[-1] += rew
+                if done:
+                    episode_rewards.append(0.0)
+
+
+                if len(episode_rewards[-101:-1]) == 0:
+                    mean_100ep_reward = -np.inf
+                else:
+                    mean_100ep_reward = round(float(np.mean(episode_rewards[-101:-1])), 1)
+
+                num_episodes = len(episode_rewards)
+                if self.verbose >= 1 and done and log_interval is not None and len(episode_rewards) % log_interval == 0:
+                    logger.record_tabular("steps", self.task_step)
+                    logger.record_tabular("episodes", num_episodes)
+                    logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
+                    if self.exploration:
+                        logger.record_tabular("% time spent exploring", int(100 * self.exploration.value(self.task_step)))
+                    logger.dump_tabular()
+                
+                obs = new_obs
+                if done:
+                    if not isinstance(self.env, VecEnv):
+                        obs = self.env.reset()
+
+        return self
 
 class _UnvecWrapper(VecEnvWrapper):
     def __init__(self, venv):

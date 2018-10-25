@@ -69,7 +69,7 @@ class TRPO(BaseRLModel):
 
         self.graph = None
         self.sess = None
-        self.policy_pi = None
+        self.model = None
         self.loss_names = None
         self.assign_old_eq_new = None
         self.compute_losses = None
@@ -93,9 +93,9 @@ class TRPO(BaseRLModel):
         self.episode_reward = None
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
-    def setup_model(self):
+    def _setup_model(self):
         # prevent import loops
         from stable_baselines.gail.adversary import TransitionClassifier
 
@@ -117,7 +117,7 @@ class TRPO(BaseRLModel):
                                                              entcoeff=self.adversary_entcoeff)
 
                 # Construct network for new policy
-                self.policy_pi = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
+                self.model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                              None, reuse=False)
 
                 # Network for old policy
@@ -129,19 +129,19 @@ class TRPO(BaseRLModel):
                     atarg = tf.placeholder(dtype=tf.float32, shape=[None])  # Target advantage function (if applicable)
                     ret = tf.placeholder(dtype=tf.float32, shape=[None])  # Empirical return
 
-                    observation = self.policy_pi.obs_ph
-                    action = self.policy_pi.pdtype.sample_placeholder([None])
+                    observation = self.model.obs_ph
+                    action = self.model.pdtype.sample_placeholder([None])
 
-                    kloldnew = old_policy.proba_distribution.kl(self.policy_pi.proba_distribution)
-                    ent = self.policy_pi.proba_distribution.entropy()
+                    kloldnew = old_policy.proba_distribution.kl(self.model.proba_distribution)
+                    ent = self.model.proba_distribution.entropy()
                     meankl = tf.reduce_mean(kloldnew)
                     meanent = tf.reduce_mean(ent)
                     entbonus = self.entcoeff * meanent
 
-                    vferr = tf.reduce_mean(tf.square(self.policy_pi.value_fn[:, 0] - ret))
+                    vferr = tf.reduce_mean(tf.square(self.model.value_fn[:, 0] - ret))
 
                     # advantage * pnew / pold
-                    ratio = tf.exp(self.policy_pi.proba_distribution.logp(action) -
+                    ratio = tf.exp(self.model.proba_distribution.logp(action) -
                                    old_policy.proba_distribution.logp(action))
                     surrgain = tf.reduce_mean(ratio * atarg)
 
@@ -234,9 +234,9 @@ class TRPO(BaseRLModel):
                 self.timed = timed
                 self.allmean = allmean
 
-                self.step = self.policy_pi.step
-                self.proba_step = self.policy_pi.proba_step
-                self.initial_state = self.policy_pi.initial_state
+                self.step = self.model.step
+                self.proba_step = self.model.proba_step
+                self.initial_state = self.model.initial_state
 
                 self.params = find_trainable_variables("model")
                 if self.using_gail:
@@ -253,7 +253,7 @@ class TRPO(BaseRLModel):
             self._setup_learn(seed)
 
             with self.sess.as_default():
-                seg_gen = traj_segment_generator(self.policy_pi, self.env, self.timesteps_per_batch,
+                seg_gen = traj_segment_generator(self.model, self.env, self.timesteps_per_batch,
                                                  reward_giver=self.reward_giver, gail=self.using_gail)
 
                 episodes_so_far = 0

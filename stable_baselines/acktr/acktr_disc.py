@@ -80,7 +80,6 @@ class ACKTR(BaseRLModel):
         self.q_runner = None
         self.learning_rate_schedule = None
         self.train_model = None
-        self.step_model = None
         self.step = None
         self.proba_step = None
         self.value = None
@@ -91,9 +90,9 @@ class ACKTR(BaseRLModel):
         self.trained = False
 
         if _init_setup_model:
-            self.setup_model()
+            self._setup_model()
 
-    def setup_model(self):
+    def _setup_model(self):
         with SetVerbosity(self.verbose):
 
             assert issubclass(self.policy, BasePolicy), "Error: the input policy for the ACKTR model must be " \
@@ -112,7 +111,7 @@ class ACKTR(BaseRLModel):
                     n_batch_step = self.n_envs
                     n_batch_train = self.n_envs * self.n_steps
 
-                self.model = step_model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs,
+                self.model = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs,
                                                       1, n_batch_step, reuse=False)
 
                 self.params = params = find_trainable_variables("model")
@@ -178,11 +177,10 @@ class ACKTR(BaseRLModel):
                         optim.compute_and_apply_stats(self.joint_fisher, var_list=params)
 
                 self.train_model = train_model
-                self.step_model = step_model
-                self.step = step_model.step
-                self.proba_step = step_model.proba_step
-                self.value = step_model.value
-                self.initial_state = step_model.initial_state
+                self.step = self.model.step
+                self.proba_step = self.model.proba_step
+                self.value = self.model.value
+                self.initial_state = self.model.initial_state
                 tf.global_variables_initializer().run(session=self.sess)
 
                 self.summary = tf.summary.merge_all()
