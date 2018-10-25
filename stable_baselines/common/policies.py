@@ -22,8 +22,7 @@ def nature_cnn(scaled_images, **kwargs):
     layer_1 = activ(conv(scaled_images, 'c1', n_filters=32, filter_size=8, stride=4, init_scale=np.sqrt(2), **kwargs))
     layer_2 = activ(conv(layer_1, 'c2', n_filters=64, filter_size=4, stride=2, init_scale=np.sqrt(2), **kwargs))
     layer_3 = activ(conv(layer_2, 'c3', n_filters=64, filter_size=3, stride=1, init_scale=np.sqrt(2), **kwargs))
-    layer_3 = conv_to_fc(layer_3)
-    return activ(linear(layer_3, 'fc1', n_hidden=512, init_scale=np.sqrt(2)))
+    return conv_to_fc(layer_3)
 
 
 class BasePolicy(ABC):
@@ -52,7 +51,7 @@ class BasePolicy(ABC):
         self.n_steps = n_steps
 
         if layers is None:
-            layers = [64, 64]
+            layers = [512]
         self.layers = layers
         assert len(layers) >= 1, "Error: must have at least one hidden layer for the policy."
 
@@ -235,12 +234,14 @@ class FeedForwardPolicy(BasePolicy):
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     :param layer_norm: (bool) enable layer normalisation
     :param dueling: (bool) if true double the output MLP to compute a baseline for action scores
+    :param is_DQN: (bool) if True, enables dueling (duplication because dueling should apply to more than DQN)
+    :param use_action_ph: (Tensorflow Tensor) batch_size x flattened_ac_space_size tensor
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None,
                  cnn_extractor=nature_cnn, feature_extraction="cnn",
-                 obs_phs=None, layer_norm=False, dueling=True, is_DQN=False, **kwargs):
+                 obs_phs=None, layer_norm=False, dueling=True, is_DQN=False, action_ph=None, **kwargs):
         
         super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps,
                                                 n_batch, n_lstm=256, dueling=dueling, is_DQN=is_DQN, reuse=reuse, 
@@ -250,28 +251,27 @@ class FeedForwardPolicy(BasePolicy):
         with tf.variable_scope("model", reuse=reuse):
             if feature_extraction == "cnn":
                 extracted_features = cnn_extractor(self.processed_x, **kwargs)
-
-                value_fn = linear(extracted_features, 'vf', 1)
-                pi_latent = extracted_features
-                vf_latent = extracted_features
-
             else:
-                activ = tf.nn.relu
                 extracted_features = tf.layers.flatten(self.processed_x)
-                pi_h = extracted_features
-                vf_h = extracted_features
-                for i, layer_size in enumerate(self.layers):
-                    pi_h = tf.layers.dense(pi_h, layer_size, name = 'pi_fc' + str(i))
-                    vf_h = tf.layers.dense(vf_h, layer_size, name = 'vf_fc' + str(i))
-                    if layer_norm:
-                        pi_h = tf_layers.layer_norm(pi_h, center=True, scale=True)
-                        vf_h = tf_layers.layer_norm(vf_h, center=True, scale=True)
-                    pi_h = activ(pi_h)
-                    vf_h = activ(vf_h)
 
-                value_fn = linear(vf_h, 'vf', 1)
-                pi_latent = pi_h
-                vf_latent = vf_h
+            if self.action_ph is not None:
+                extracted_features = tf.concat(axis=1, values=[extracted_features, self.action_ph])
+
+            activ = tf.nn.relu
+            pi_h = extracted_features
+            vf_h = extracted_features
+            for i, layer_size in enumerate(self.layers):
+                pi_h = tf.layers.dense(pi_h, layer_size, name = 'pi_fc' + str(i))
+                vf_h = tf.layers.dense(vf_h, layer_size, name = 'vf_fc' + str(i))
+                if layer_norm:
+                    pi_h = tf_layers.layer_norm(pi_h, center=True, scale=True)
+                    vf_h = tf_layers.layer_norm(vf_h, center=True, scale=True)
+                pi_h = activ(pi_h)
+                vf_h = activ(vf_h)
+
+            value_fn = linear(vf_h, 'vf', 1)
+            pi_latent = pi_h
+            vf_latent = vf_h
             
             self.proba_distribution, self.policy, self.q_values = \
                 self.pdtype.proba_distribution_from_latent(pi_latent, vf_latent, init_scale=0.01)

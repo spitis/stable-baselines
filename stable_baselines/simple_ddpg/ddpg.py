@@ -91,7 +91,7 @@ class SimpleDDPG(SimpleRLModel):
                 self.sess = tf_util.make_session(graph=self.graph)
                 n_actions = self.action_space.n
      
-                with tf.variable_scope("deepq"):
+                with tf.variable_scope("ddpg"):
  
                     # epsilon for e-greedy exploration
                     eps_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
@@ -189,7 +189,7 @@ class SimpleDDPG(SimpleRLModel):
                 self.model = policy
                 self.eps_ph = eps_ph
                  
-                with tf.variable_scope("deepq"):
+                with tf.variable_scope("ddpg"):
                     self.params = tf.trainable_variables()
  
                 # Initialize the parameters and copy them to the target network.
