@@ -10,7 +10,8 @@ from stable_baselines.common.policies import BasePolicy
 from stable_baselines.common.vec_env import VecEnv
 from stable_baselines.common.schedules import LinearSchedule
 from stable_baselines.common.replay_buffer import ReplayBuffer
- 
+
+
 class SimpleDQN(SimpleRLModel):
     """
     Simplified version of DQN model class. DQN paper: https://arxiv.org/pdf/1312.5602.pdf
@@ -22,6 +23,7 @@ class SimpleDQN(SimpleRLModel):
  
     :param exploration_fraction: (float) fraction of entire training period over which gamme is annealed
     :param exploration_final_eps: (float) final value of random action probability
+    :param param_noise: (bool) Whether or not to apply noise to the parameters of the policy.
      
     :param buffer_size: (int) size of the replay buffer
     :param train_freq: (int) update the model every `train_freq` steps
@@ -36,7 +38,7 @@ class SimpleDQN(SimpleRLModel):
     """
  
     def __init__(self, policy, env, gamma=0.99, learning_rate=5e-4, *, exploration_fraction=0.1,
-                 exploration_final_eps=0.02, buffer_size=50000, train_freq=1, batch_size=32, 
+                 exploration_final_eps=0.02, param_noise=False, buffer_size=50000, train_freq=1, batch_size=32, 
                  learning_starts=1000, target_network_update_freq=500, verbose=0, tensorboard_log=None,
                  _init_setup_model=True):
  
@@ -51,6 +53,11 @@ class SimpleDQN(SimpleRLModel):
          
         self.exploration_final_eps = exploration_final_eps
         self.exploration_fraction = exploration_fraction
+
+        self.param_noise = param_noise
+        if param_noise:
+            raise NotImplementedError('param_noise to be added later')
+        self.reset = True
          
         self.learning_rate = learning_rate
         self.gamma = gamma
@@ -85,21 +92,23 @@ class SimpleDQN(SimpleRLModel):
                 n_actions = self.action_space.n
      
                 with tf.variable_scope("deepq"):
- 
-                    # epsilon for e-greedy exploration
-                    eps_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
- 
+  
                     # policy function
                     policy = self.policy(self.sess, self.observation_space, self.action_space, n_env=1, n_steps=1, n_batch=None, is_DQN=True)
-                    deterministic_actions = tf.argmax(policy.q_values, axis=1)
- 
-                    batch_size = tf.shape(policy.obs_ph)[0]
-                    random_actions = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=n_actions, dtype=tf.int64)
-                    chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < eps_ph
-                    epsilon_greedy_actions = tf.where(chose_random, random_actions, deterministic_actions)
- 
-                    act = epsilon_greedy_actions
- 
+
+                    # exploration placeholders
+                    eps_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
+                    threshold_ph = tf.placeholder_with_default(0., shape=(), name="param_noise_threshold_ph")
+                    reset_ph = tf.placeholder_with_default(False, (), name="reset_ph")
+
+                    # online actions (with exploration)
+                    if not self.param_noise:
+                        act = epsilon_greedy_wrapper(policy, eps_ph)
+                    else:
+                        param_noise_threshold = \
+                            -np.log(1. - self.exploration.value(step) +
+                                    self.exploration.value(step) / float(self.env.action_space.n))
+                        act = param_noise_wrapper(policy, reset_ph=reset_ph, threshold_ph=threshold_ph)
                      
                     # create target q network evaluation
                     with tf.variable_scope("target_q_func", reuse=False):
@@ -180,7 +189,10 @@ class SimpleDQN(SimpleRLModel):
                 self._dones_ph = done_mask_ph
                 self.update_target_network = update_target_network
                 self.model = policy
+
                 self.eps_ph = eps_ph
+                self.reset_ph = reset_ph
+                self.threshold_ph = threshold_ph
                  
                 with tf.variable_scope("deepq"):
                     self.params = tf.trainable_variables()
@@ -194,6 +206,7 @@ class SimpleDQN(SimpleRLModel):
     def _setup_new_task(self, total_timesteps):
         """Sets up new task by reinitializing step, replay buffer, and exploration schedule"""
         self.task_step = 0
+        self.reset = True
  
         items = [("observations0", self.observation_space.shape),\
                     ("actions", self.action_space.shape),\
@@ -214,8 +227,13 @@ class SimpleDQN(SimpleRLModel):
             self.model.obs_ph : np.array(obs)[np.newaxis], # adds to new axis to convert to batch size of 1
             self.eps_ph: self.exploration.value(self.task_step)
         }
+
+        if self.reset:
+            self.reset = False
+            feed_dict[self.reset_ph] = True
+
         return self.sess.run(self.act, feed_dict = feed_dict)[0] # indexes into batch to get first (and only) action
- 
+
     def _process_experience(self, obs, action, rew, new_obs, done):
         """Called during training loop after action is taken; includes learning;
         returns a summary"""
@@ -223,6 +241,10 @@ class SimpleDQN(SimpleRLModel):
         summary = None
         self.task_step += 1
         self.global_step += 1
+
+        # Reset the episode if done
+        if done:
+            self.reset = True
  
         # Store transition in the replay buffer.
         self.replay_buffer.add(obs, action, rew, new_obs, float(done))
@@ -265,6 +287,7 @@ class SimpleDQN(SimpleRLModel):
  
             "exploration_final_eps": self.exploration_final_eps,
             "exploration_fraction": self.exploration_fraction,
+            "param_noise": self.param_noise,
  
             "learning_rate": self.learning_rate,
             "gamma": self.gamma,
@@ -281,3 +304,20 @@ class SimpleDQN(SimpleRLModel):
         params = self.sess.run(self.params)
  
         self._save_to_file(save_path, data=data, params=params)
+
+
+def epsilon_greedy_wrapper(policy, epsilon_placeholder):
+    """
+    Given policy and epsilon_placeholder returns a batch_size x 1 Tensor representing e-greedy actions.
+    """
+    deterministic_actions = tf.argmax(policy.q_values, axis=1)
+    batch_size = tf.shape(policy.obs_ph)[0]
+    random_actions = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=policy.ac_space.n, dtype=tf.int64)
+    chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < epsilon_placeholder
+    return tf.where(chose_random, random_actions, deterministic_actions)
+
+def param_noise_wrapper(policy, reset_ph, threshold_ph, scale=True):
+    """
+    Given policy and stated args, returns a batch_size x 1 Tensor representing actions after parameter noise.
+    """
+    raise NotImplementedError('param_noise not yet implemented')

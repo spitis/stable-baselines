@@ -160,7 +160,6 @@ class DQN(BaseRLModel):
                 kwargs = {}
                 if not self.param_noise:
                     update_eps = self.exploration.value(step)
-                    update_param_noise_threshold = 0.
                 else:
                     update_eps = 0.
                     # Compute the threshold such that the KL divergence between perturbed and non-perturbed

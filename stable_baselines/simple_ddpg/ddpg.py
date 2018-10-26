@@ -10,7 +10,10 @@ from stable_baselines.common.policies import BasePolicy
 from stable_baselines.common.vec_env import VecEnv
 from stable_baselines.common.schedules import LinearSchedule
 from stable_baselines.common.replay_buffer import ReplayBuffer
- 
+from stable_baselines.simple_ddpg.noise import NormalActionNoise, OrnsteinUhlenbeckActionNoise
+
+
+
 class SimpleDDPG(SimpleRLModel):
     """
     Simplified version of DDPG model class. DDPG paper: https://arxiv.org/pdf/1509.02971.pdf
@@ -39,7 +42,8 @@ class SimpleDDPG(SimpleRLModel):
     def __init__(self, policy, env, gamma=0.99, learning_rate=5e-4, *, exploration_fraction=0.1,
                  exploration_final_eps=0.02, buffer_size=50000, train_freq=1, batch_size=32, 
                  learning_starts=1000, target_network_update_frac=0.001, target_network_update_freq=1, 
-                 joint_feature_extractor=tf.identity, verbose=0, tensorboard_log=None, _init_setup_model=True):
+                 noise_type='ornstein', joint_feature_extractor=tf.identity, verbose=0, tensorboard_log=None, 
+                 _init_setup_model=True):
  
         super(SimpleDDPG, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
  
@@ -55,8 +59,7 @@ class SimpleDDPG(SimpleRLModel):
         # a processed tensor that is used by _both_ actor and critic -- defaults to tf.identity
         self.joint_feature_extractor = joint_feature_extractor
          
-        self.exploration_final_eps = exploration_final_eps
-        self.exploration_fraction = exploration_fraction
+        self.noise_type = noise_type
          
         self.learning_rate = learning_rate
         self.gamma = gamma
@@ -89,8 +92,8 @@ class SimpleDDPG(SimpleRLModel):
             self.graph = tf.Graph()
             with self.graph.as_default():
                 self.sess = tf_util.make_session(graph=self.graph)
-                n_actions = self.action_space.n
-     
+                n_actions = self.action_space.shape[-1]
+                     
                 with tf.variable_scope("ddpg"):
  
                     # epsilon for e-greedy exploration
