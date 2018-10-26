@@ -30,6 +30,7 @@ class SimpleDQN(SimpleRLModel):
     :param batch_size: (int) size of a batched sampled from replay buffer for training
     :param learning_starts: (int) how many steps of the model to collect transitions for before learning starts
  
+    :param target_network_update_frac: (float) fraction by which to update the target network every time.
     :param target_network_update_freq: (int) update the target network every `target_network_update_freq` steps.
  
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
@@ -39,8 +40,8 @@ class SimpleDQN(SimpleRLModel):
  
     def __init__(self, policy, env, gamma=0.99, learning_rate=5e-4, *, exploration_fraction=0.1,
                  exploration_final_eps=0.02, param_noise=False, buffer_size=50000, train_freq=1, batch_size=32, 
-                 learning_starts=1000, target_network_update_freq=500, verbose=0, tensorboard_log=None,
-                 _init_setup_model=True):
+                 learning_starts=1000, target_network_update_frac=1., target_network_update_freq=500, verbose=0, 
+                 tensorboard_log=None, _init_setup_model=True):
  
         super(SimpleDQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
  
@@ -49,6 +50,7 @@ class SimpleDQN(SimpleRLModel):
         self.batch_size = batch_size
         self.buffer_size = buffer_size
  
+        self.target_network_update_frac = target_network_update_frac
         self.target_network_update_freq = target_network_update_freq
          
         self.exploration_final_eps = exploration_final_eps
@@ -86,6 +88,7 @@ class SimpleDQN(SimpleRLModel):
         with SetVerbosity(self.verbose):        
             assert isinstance(self.action_space, gym.spaces.Discrete), \
                 "Error: SimpleDQN only supports gym.spaces.Discrete action space."
+
             self.graph = tf.Graph()
             with self.graph.as_default():
                 self.sess = tf_util.make_session(graph=self.graph)
@@ -105,9 +108,6 @@ class SimpleDQN(SimpleRLModel):
                     if not self.param_noise:
                         act = epsilon_greedy_wrapper(policy, eps_ph)
                     else:
-                        param_noise_threshold = \
-                            -np.log(1. - self.exploration.value(step) +
-                                    self.exploration.value(step) / float(self.env.action_space.n))
                         act = param_noise_wrapper(policy, reset_ph=reset_ph, threshold_ph=threshold_ph)
                      
                     # create target q network evaluation
@@ -168,7 +168,9 @@ class SimpleDQN(SimpleRLModel):
                     update_target_network = []
                     for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name),
                                                 sorted(target_q_func_vars, key=lambda v: v.name)):
-                        update_target_network.append(var_target.assign(var))
+                        new_target = self.target_network_update_frac       * var +\
+                                     (1 - self.target_network_update_frac) * var_target
+                        update_target_network.append(var_target.assign(new_target))
                     update_target_network = tf.group(*update_target_network)
  
                 with tf.variable_scope("input_info", reuse=False):
@@ -320,4 +322,4 @@ def param_noise_wrapper(policy, reset_ph, threshold_ph, scale=True):
     """
     Given policy and stated args, returns a batch_size x 1 Tensor representing actions after parameter noise.
     """
-    raise NotImplementedError('param_noise not yet implemented')
+    raise NotImplementedError('param_noise to be added later')

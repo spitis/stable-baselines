@@ -42,7 +42,7 @@ class SimpleDDPG(SimpleRLModel):
     def __init__(self, policy, env, gamma=0.99, learning_rate=5e-4, *, exploration_fraction=0.1,
                  exploration_final_eps=0.02, buffer_size=50000, train_freq=1, batch_size=32, 
                  learning_starts=1000, target_network_update_frac=0.001, target_network_update_freq=1, 
-                 noise_type='ornstein', joint_feature_extractor=tf.identity, verbose=0, tensorboard_log=None, 
+                 noise_type='ou', joint_feature_extractor=tf.identity, verbose=0, tensorboard_log=None, 
                  _init_setup_model=True):
  
         super(SimpleDDPG, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
@@ -95,21 +95,20 @@ class SimpleDDPG(SimpleRLModel):
                 n_actions = self.action_space.shape[-1]
                      
                 with tf.variable_scope("ddpg"):
- 
-                    # epsilon for e-greedy exploration
-                    eps_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
- 
+  
                     # policy function
                     policy = self.policy(self.sess, self.observation_space, self.action_space, n_env=1, n_steps=1, n_batch=None, is_DQN=True)
-                    deterministic_actions = tf.argmax(policy.q_values, axis=1)
- 
-                    batch_size = tf.shape(policy.obs_ph)[0]
-                    random_actions = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=n_actions, dtype=tf.int64)
-                    chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < eps_ph
-                    epsilon_greedy_actions = tf.where(chose_random, random_actions, deterministic_actions)
- 
-                    act = epsilon_greedy_actions
- 
+
+                    # exploration placeholders
+                    eps_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
+                    threshold_ph = tf.placeholder_with_default(0., shape=(), name="param_noise_threshold_ph")
+                    reset_ph = tf.placeholder_with_default(False, (), name="reset_ph")
+
+                    # online actions (with exploration)
+                    if not self.param_noise:
+                        act = epsilon_greedy_wrapper(policy, eps_ph)
+                    else:
+                        act = param_noise_wrapper(policy, reset_ph=reset_ph, threshold_ph=threshold_ph)
                      
                     # create target q network evaluation
                     with tf.variable_scope("target_q_func", reuse=False):
