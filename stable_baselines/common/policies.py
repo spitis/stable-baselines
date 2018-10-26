@@ -43,10 +43,13 @@ class BasePolicy(ABC):
         and the processed observation placeholder respectivly
     :param dueling: (bool) For DQN only: if true double the output MLP to compute a baseline for action scores
     :param is_DQN: (bool) For DQN only: whether it is a DQN
+    :param goal_space: (Gym Space) The goal space of the goal-based environment
+    :param goal_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for goal placeholder
+        and the processed goal placeholder respectivly
     """
 
     def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, layers=None, scale=False,
-                 obs_phs=None, dueling=True, is_DQN=False):
+                 obs_phs=None, dueling=True, is_DQN=False, goal_space=None, goal_phs=None):
         self.n_env = n_env
         self.n_steps = n_steps
 
@@ -69,10 +72,21 @@ class BasePolicy(ABC):
             # action placeholder
             self.action_ph = None
 
+            # goal placeholder, if applicable for the environment
+            if goal_space is not None:
+                if goal_phs is None:
+                    self.goal_ph, self.processed_g = observation_input(goal_space, n_batch, scale=scale)
+                else:
+                    self.goal_ph, self.processed_g = goal_phs
+            else:
+                self.goal_ph, self.processed_g = None, None
+
+
         self.sess = sess
         self.reuse = reuse
         self.ob_space = ob_space
         self.ac_space = ac_space
+        self.goal_space = goal_space
 
         # from old ActorCriticPolicy class, but now with DQN arg
         # DQN uses a categorical distribution, with action probablities computed as softmax over q-values
@@ -109,7 +123,7 @@ class BasePolicy(ABC):
                 self.policy_proba = tf.nn.softmax(self.policy_proba)
             self._value = self.value_fn[:, 0]
 
-    def step(self, obs, state=None, mask=None, deterministic=True):
+    def step(self, obs, state=None, mask=None, deterministic=True, goal=None):
         """
         Returns the policy for a single step
 
@@ -121,7 +135,7 @@ class BasePolicy(ABC):
         """
         raise NotImplementedError
 
-    def proba_step(self, obs, state=None, mask=None):
+    def proba_step(self, obs, state=None, mask=None, goal=None):
         """
         Returns the action probability for a single step
 
@@ -135,9 +149,11 @@ class BasePolicy(ABC):
             feed_dict[self.states_ph] = state
         if mask is not None:
             feed_dict[self.masks_ph] = mask
+        if goal is not None:
+            feed_dict[self.goal_ph] = goal
         return self.sess.run(self.policy_proba, feed_dict=feed_dict)
 
-    def value(self, obs, *, action=None, state=None, mask=None):
+    def value(self, obs, *, action=None, state=None, mask=None, goal=None):
         """
         Returns the value for a single step
 
@@ -154,6 +170,8 @@ class BasePolicy(ABC):
             feed_dict[self.states_ph] = state
         if mask is not None:
             feed_dict[self.masks_ph] = mask
+        if goal is not None:
+            feed_dict[self.goal_ph] = goal
         return self.sess.run(self._value, feed_dict=feed_dict)
 
 
