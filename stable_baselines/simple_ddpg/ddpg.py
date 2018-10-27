@@ -168,7 +168,9 @@ class SimpleDDPG(SimpleRLModel):
                     update_target_network = []
                     for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name),
                                                 sorted(target_q_func_vars, key=lambda v: v.name)):
-                        update_target_network.append(var_target.assign(var))
+                        new_target = self.target_network_update_frac       * var +\
+                                     (1 - self.target_network_update_frac) * var_target
+                        update_target_network.append(var_target.assign(new_target))
                     update_target_network = tf.group(*update_target_network)
  
                 with tf.variable_scope("input_info", reuse=False):
