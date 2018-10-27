@@ -1,6 +1,6 @@
 import tensorflow as tf
 
-from stable_baselines.common.input import observation_input
+from stable_baselines.common.policies import observation_input
 from stable_baselines.common.distributions import make_proba_dist_type
 
 

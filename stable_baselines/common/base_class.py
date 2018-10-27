@@ -35,6 +35,7 @@ class BaseRLModel(ABC):
         self._requires_vec_env = requires_vec_env
         self.observation_space = None
         self.action_space = None
+        self.goal_space = None
         self.n_envs = None
         self._vectorize_action = False
         self.model = None # This is the instatiated policy object, i.e., self.model = self.policy(...)
@@ -61,7 +62,15 @@ class BaseRLModel(ABC):
                     print("Creating environment from the given name, wrapped in a DummyVecEnv.")
                 self.env = env = DummyVecEnv([lambda: gym.make(env)])
 
-            self.observation_space = env.observation_space
+            # Check if the environment is a goal-oriented type based on their observation space
+            # Goal oriented Gym space have observation_space as dict
+            if type(env.observation_space) == gym.spaces.dict_space.Dict:
+                self.observation_space = env.observation_space.spaces["observation"]
+                # Assume that desired and achieved goal have the same space
+                self.goal_space = env.observation_space.spaces["desired_goal"]
+            else:
+                self.observation_space = env.observation_space
+
             self.action_space = env.action_space
             if requires_vec_env:
                 if isinstance(env, VecEnv):
@@ -164,7 +173,7 @@ class BaseRLModel(ABC):
         """
         pass
 
-    def predict(self, observation, state=None, mask=None, deterministic=False):
+    def predict(self, observation, state=None, mask=None, deterministic=False, goal=None):
         """
         Get the model's action from an observation
 
@@ -172,6 +181,7 @@ class BaseRLModel(ABC):
         :param state: (np.ndarray) The last states (can be None, used in recurrent policies)
         :param mask: (np.ndarray) The last masks (can be None, used in recurrent policies)
         :param deterministic: (bool) Whether or not to return deterministic actions.
+        :param goal: (np.ndarray) the goal (can be None, used in goal-based environment)
         :return: (np.ndarray, np.ndarray) the model's action and the next state (used in recurrent policies)
         """
         if state is None:

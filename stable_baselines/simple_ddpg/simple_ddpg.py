@@ -1,17 +1,12 @@
-from functools import partial
- 
 import tensorflow as tf
 import numpy as np
 import gym
+import trfl
  
-from stable_baselines import logger
-from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity, TensorboardWriter
-from stable_baselines.common.policies import BasePolicy
-from stable_baselines.common.vec_env import VecEnv
+from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
 from stable_baselines.common.replay_buffer import ReplayBuffer
 from stable_baselines.simple_ddpg.noise import NormalActionNoise, OrnsteinUhlenbeckActionNoise
-
 
 
 class SimpleDDPG(SimpleRLModel):
@@ -23,8 +18,8 @@ class SimpleDDPG(SimpleRLModel):
     :param gamma: (float) discount factor
     :param learning_rate: (float) learning rate for adam optimizer
  
-    :param exploration_fraction: (float) fraction of entire training period over which gamme is annealed
-    :param exploration_final_eps: (float) final value of random action probability
+    :param noise_type: (str) the wanted noises ('adaptive-param', 'normal' or 'ou'), can use multiple noise type by
+        seperating them with commas
      
     :param buffer_size: (int) size of the replay buffer
     :param train_freq: (int) update the model every `train_freq` steps
@@ -34,15 +29,16 @@ class SimpleDDPG(SimpleRLModel):
     :param target_network_update_frac: (float) fraction by which to update the target network every time.
     :param target_network_update_freq: (int) update the target network every `target_network_update_freq` steps.
 
+    :param joint_feature_extractor: (function) produces ops for feature extractor shared by actor & critic
+    
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param tensorboard_log: (str) the log location for tensorboard (if None, no logging)
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
     """
  
-    def __init__(self, policy, env, gamma=0.99, learning_rate=5e-4, *, exploration_fraction=0.1,
-                 exploration_final_eps=0.02, buffer_size=50000, train_freq=1, batch_size=32, 
+    def __init__(self, policy, env, gamma=0.99, learning_rate=5e-4, *, noise_type='ou_', buffer_size=50000, train_freq=1, batch_size=32, 
                  learning_starts=1000, target_network_update_frac=0.001, target_network_update_freq=1, 
-                 noise_type='ou', joint_feature_extractor=tf.identity, verbose=0, tensorboard_log=None, 
+                 joint_feature_extractor=tf.identity, verbose=0, tensorboard_log=None, 
                  _init_setup_model=True):
  
         super(SimpleDDPG, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
