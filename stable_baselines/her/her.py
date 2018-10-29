@@ -102,9 +102,6 @@ class HER(BaseRLModel):
     def predict(self, observation, state=None, mask=None, deterministic=False):
         pass
 
-    def action_probability(self, observation, state=None, mask=None):
-        pass
-
     def save(self, save_path):
         pass
 

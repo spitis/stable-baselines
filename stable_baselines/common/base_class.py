@@ -44,7 +44,6 @@ class BaseRLModel(ABC):
         self.sess = None
         self.initial_state = None
         self.step = lambda: None
-        self.proba_step = lambda: None
         self.params = None
 
 
@@ -201,32 +200,6 @@ class BaseRLModel(ABC):
             actions = actions[0]
 
         return actions, states
-
-    def action_probability(self, observation, state=None, mask=None):
-        """
-        Get the model's action probability distribution from an observation
-
-        :param observation: (np.ndarray) the input observation
-        :param state: (np.ndarray) The last states (can be None, used in recurrent policies)
-        :param mask: (np.ndarray) The last masks (can be None, used in recurrent policies)
-        :return: (np.ndarray) the model's action probability distribution
-        """
-        if state is None:
-            state = self.initial_state
-        if mask is None:
-            mask = [False for _ in range(self.n_envs)]
-        observation = np.array(observation)
-        vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
-
-        observation = observation.reshape((-1,) + self.observation_space.shape)
-        actions_proba = self.model.proba_step(observation, state, mask)
-
-        if not vectorized_env:
-            if state is not None:
-                raise ValueError("Error: The environment must be vectorized when using recurrent policies.")
-            actions_proba = actions_proba[0]
-
-        return actions_proba
 
     @abstractmethod
     def save(self, save_path):

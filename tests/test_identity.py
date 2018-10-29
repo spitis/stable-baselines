@@ -1,6 +1,6 @@
 import pytest
 
-from stable_baselines import A2C, ACER, ACKTR, DQN, SimpleDQN, DDPG, PPO1, PPO2, TRPO
+from stable_baselines import A2C, ACER, ACKTR, DQN, SimpleDQN, DDPG, SimpleDDPG, PPO1, PPO2, TRPO
 from stable_baselines.ddpg import AdaptiveParamNoiseSpec
 from stable_baselines.common.identity_env import IdentityEnv, IdentityEnvBox
 from stable_baselines.common.vec_env import DummyVecEnv
@@ -14,11 +14,13 @@ LEARN_FUNC_DICT = {
     'acer': lambda e: ACER(policy="MlpPolicy", env=e,
                            n_steps=1, replay_ratio=1).learn(total_timesteps=15000, seed=0),
     'acktr': lambda e: ACKTR(policy="MlpPolicy", env=e,
-                             learning_rate=5e-4, n_steps=1).learn(total_timesteps=20000, seed=0),
+                             learning_rate=3e-4, n_steps=1).learn(total_timesteps=25000, seed=0),
     'dqn': lambda e: DQN(policy="MlpPolicy", batch_size=16, gamma=0.1,
                          exploration_fraction=0.001, env=e).learn(total_timesteps=40000, seed=0),
     'simple_dqn': lambda e: SimpleDQN(policy="MlpPolicy", batch_size=16, gamma=0.1,
                          exploration_fraction=0.001, env=e).learn(total_timesteps=40000, seed=0),
+    'simple_ddpg': lambda e: SimpleDDPG(policy="MlpPolicy", batch_size=16, gamma=0.1,
+                                      env=e).learn(total_timesteps=20000, seed=0),
     'ppo1': lambda e: PPO1(policy="MlpPolicy", env=e, lam=0.5,
                            optim_batchsize=16, optim_stepsize=1e-3).learn(total_timesteps=15000, seed=0),
     'ppo2': lambda e: PPO2(policy="MlpPolicy", env=e,
@@ -28,7 +30,7 @@ LEARN_FUNC_DICT = {
 }
 
 @pytest.mark.slow
-#@pytest.mark.parametrize("model_name", ['dqn'])
+#@pytest.mark.parametrize("model_name", ['simple_ddpg'])
 @pytest.mark.parametrize("model_name", ['a2c', 'acer', 'acktr', 'dqn', 'simple_dqn', 'ppo1', 'ppo2', 'trpo'])
 def test_identity(model_name):
     """
@@ -53,13 +55,34 @@ def test_identity(model_name):
     # Free memory
     del model, env
 
-
 @pytest.mark.slow
-def test_identity_ddpg():
+def test_identity_simple_ddpg():
     """
     Test if the algorithm (with a given policy)
     can learn an identity transformation (i.e. return observation as an action)
     """
+    env = DummyVecEnv([lambda: IdentityEnvBox(eps=0.5)])
+
+    model = LEARN_FUNC_DICT['simple_ddpg'](env)
+
+    n_trials = 1000
+    reward_sum = 0
+    set_global_seeds(0)
+    obs = env.reset()
+    for _ in range(n_trials):
+        action, _ = model.predict(obs)
+        obs, reward, _, _ = env.step(action)
+        reward_sum += reward
+    assert reward_sum > 0.8 * n_trials
+    # Free memory
+    del model, env
+
+@pytest.mark.slow
+def test_identity_ddpg():
+    ""
+    Test if the algorithm (with a given policy)
+    can learn an identity transformation (i.e. return observation as an action)
+    ""
     env = DummyVecEnv([lambda: IdentityEnvBox(eps=0.5)])
 
     std = 0.2

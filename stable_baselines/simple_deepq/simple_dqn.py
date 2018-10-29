@@ -88,14 +88,14 @@ class SimpleDQN(SimpleRLModel):
       self.graph = tf.Graph()
       with self.graph.as_default():
         self.sess = tf_util.make_session(graph=self.graph)
-        
+
         with tf.variable_scope("deepq"):
 
           # policy function
           policy = self.policy(self.sess, self.observation_space, self.action_space, n_env=1,
                                n_steps=1, n_batch=None, is_DQN=True, goal_space=self.goal_space)
 
-          # exploration placeholders & online actions (with exploration)
+          # exploration placeholders & online action with exploration noise
           epsilon_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
           threshold_ph = tf.placeholder_with_default(0., shape=(), name="param_noise_threshold_ph")
           reset_ph = tf.placeholder_with_default(False, (), name="reset_ph")
@@ -129,18 +129,20 @@ class SimpleDQN(SimpleRLModel):
 
           # gamma
           pcont_t = tf.constant([self.gamma])
-          pcont_t = tf.tile(pcont_t, tf.shape(a_tm1))
+          pcont_t = tf.tile(pcont_t, tf.shape(r_t))
           pcont_t *= (1 - done_mask_ph) * pcont_t
 
           # target q values based on 1-step bellman
           if self.double_q:
-            _, loss_info = trfl.double_qlearning(policy.q_values, a_tm1, r_t, pcont_t,
-                                                 target_policy.q_values, double_policy.q_values)
+            l2_loss, loss_info = trfl.double_qlearning(policy.q_values, a_tm1, r_t, pcont_t,
+                                                       target_policy.q_values,
+                                                       double_policy.q_values)
           else:
-            _, loss_info = trfl.qlearning(policy.q_values, a_tm1, r_t, pcont_t,
-                                          target_policy.q_values)
+            l2_loss, loss_info = trfl.qlearning(policy.q_values, a_tm1, r_t, pcont_t,
+                                                target_policy.q_values)
 
-          # huber_loss (instead of trfl's squared loss)
+          tf_util.NOT_USED(l2_loss)  # because using huber loss (next line)
+
           mean_huber_loss = tf.reduce_mean(tf_util.huber_loss(loss_info.td_error))
 
           tf.summary.scalar("td_error", tf.reduce_mean(loss_info.td_error))
@@ -293,8 +295,16 @@ class SimpleDQN(SimpleRLModel):
     return summary
 
   def predict(self, observation, state=None, mask=None, deterministic=True, goal=None):
-    return super(SimpleDQN, self).predict(observation, state=state, mask=mask,
-                                          deterministic=deterministic, goal=goal)
+    observation = np.array(observation)
+    vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
+
+    observation = observation.reshape((-1,) + self.observation_space.shape)
+    actions = self.sess.run(self.model.deterministic_action, {self._obs1_ph: observation})
+
+    if not vectorized_env:
+        actions = actions[0]
+
+    return actions, None
 
   def save(self, save_path):
     # Things set in the __init__ method should be saved here, because the model is called with default args on load(),

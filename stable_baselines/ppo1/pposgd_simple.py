@@ -68,7 +68,6 @@ class PPO1(BaseRLModel):
         self.compute_losses = None
         self.params = None
         self.step = None
-        self.proba_step = None
         self.initial_state = None
         self.summary = None
         self.episode_reward = None
@@ -160,7 +159,6 @@ class PPO1(BaseRLModel):
                         tf.summary.histogram('observation', obs_ph)
 
                 self.step = self.model.step
-                self.proba_step = self.model.proba_step
                 self.initial_state = self.model.initial_state
 
                 tf_util.initialize(sess=self.sess)

@@ -34,6 +34,9 @@ def switch(condition, then_expression, else_expression):
 # Extras
 # ================================================================
 
+def NOT_USED(*args):
+  pass # do nothing
+
 def leaky_relu(tensor, leak=0.2):
     """
     Leaky ReLU

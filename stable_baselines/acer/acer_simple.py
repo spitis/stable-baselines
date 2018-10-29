@@ -134,7 +134,6 @@ class ACER(BaseRLModel):
         self.train_model = None
         self.model = None
         self.step = None
-        self.proba_step = None
         self.initial_state = None
         self.n_act = None
         self.n_batch = None
@@ -218,7 +217,7 @@ class ACER(BaseRLModel):
                     if continuous:
                         value = train_model.value_fn[:, 0]
                     else:
-                        value = tf.reduce_sum(train_model.policy_proba * train_model.q_values, axis=-1)
+                        value = tf.reduce_sum(train_model.policy * train_model.q_values, axis=-1)
 
                     rho, rho_i_ = None, None
                     if continuous:
@@ -250,7 +249,7 @@ class ACER(BaseRLModel):
                         # in the paper
                         distribution_f, f_polyak, q_value = \
                             map(lambda variables: strip(variables, self.n_envs, self.n_steps),
-                                [train_model.policy_proba, polyak_model.policy_proba, train_model.q_values])
+                                [train_model.policy, polyak_model.policy, train_model.q_values])
 
                         # Get pi and q values for actions taken
                         f_i = get_by_index(distribution_f, self.action_ph)
@@ -393,7 +392,6 @@ class ACER(BaseRLModel):
                 self.train_model = train_model
                 self.model = model
                 self.step = model.step
-                self.proba_step = model.proba_step
                 self.initial_state = model.initial_state
 
                 tf.global_variables_initializer().run(session=self.sess)
@@ -596,9 +594,14 @@ class _Runner(AbstractEnvRunner):
         """
         enc_obs = [self.obs]
         mb_obs, mb_actions, mb_mus, mb_dones, mb_rewards = [], [], [], [], []
+        model_policy = self.model.model
         for _ in range(self.n_steps):
             actions, _, states, _ = self.model.step(self.obs, self.states, self.dones)
-            mus = self.model.proba_step(self.obs, self.states, self.dones)
+            mus = model_policy.sess.run(model_policy.policy, feed_dict={
+              model_policy.obs_ph: self.obs,
+              #model_policy.states_ph: self.states,
+              #model_policy.masks_ph: self.dones
+            })
             mb_obs.append(np.copy(self.obs))
             mb_actions.append(actions)
             mb_mus.append(mus)

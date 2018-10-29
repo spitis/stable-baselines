@@ -73,9 +73,6 @@ class GAIL(BaseRLModel):
     def predict(self, observation, state=None, mask=None, deterministic=False):
         return self.trpo.predict(observation, state, mask, deterministic=deterministic)
 
-    def action_probability(self, observation, state=None, mask=None):
-        return self.trpo.action_probability(observation, state, mask)
-
     def save(self, save_path):
         self.trpo.save(save_path)
 

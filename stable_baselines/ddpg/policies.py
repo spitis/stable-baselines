@@ -20,7 +20,7 @@ class DDPGPolicy(BasePolicy):
     :param scale: (bool) whether or not to scale the input
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, layers=None, scale=False):
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, layers=[512,64,64], scale=False):
         super(DDPGPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=n_lstm, reuse=reuse,
                                          layers=layers, scale=scale)
         self.action_ph = tf.placeholder(dtype=ac_space.dtype, shape=(None,) + ac_space.shape, name="action_ph")
@@ -82,7 +82,7 @@ class DDPG_FeedForwardPolicy(DDPGPolicy):
     :param kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
 
-    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None,
+    def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=[512,64,64],
                  cnn_extractor=nature_cnn, feature_extraction="cnn", layer_norm=False, **kwargs):
         
         super(DDPG_FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256,
@@ -106,6 +106,7 @@ class DDPG_FeedForwardPolicy(DDPGPolicy):
                 pi_h = self.cnn_extractor(obs, **self.cnn_kwargs)
             else:
                 pi_h = tf.layers.flatten(obs)
+
             for i, layer_size in enumerate(self.layers):
                 pi_h = tf.layers.dense(pi_h, layer_size, name='fc' + str(i))
                 if self.layer_norm:
@@ -127,6 +128,7 @@ class DDPG_FeedForwardPolicy(DDPGPolicy):
                 vf_h = self.cnn_extractor(obs, **self.cnn_kwargs)
             else:
                 vf_h = tf.layers.flatten(obs)
+
             for i, layer_size in enumerate(self.layers):
                 vf_h = tf.layers.dense(vf_h, layer_size, name='fc' + str(i))
                 if self.layer_norm:

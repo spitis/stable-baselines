@@ -86,7 +86,6 @@ class TRPO(BaseRLModel):
         self.rank = None
         self.reward_giver = None
         self.step = None
-        self.proba_step = None
         self.initial_state = None
         self.params = None
         self.summary = None
@@ -235,7 +234,6 @@ class TRPO(BaseRLModel):
                 self.allmean = allmean
 
                 self.step = self.model.step
-                self.proba_step = self.model.proba_step
                 self.initial_state = self.model.initial_state
 
                 self.params = find_trainable_variables("model")

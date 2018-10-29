@@ -81,7 +81,6 @@ class ACKTR(BaseRLModel):
         self.learning_rate_schedule = None
         self.train_model = None
         self.step = None
-        self.proba_step = None
         self.value = None
         self.initial_state = None
         self.n_batch = None
@@ -178,7 +177,6 @@ class ACKTR(BaseRLModel):
 
                 self.train_model = train_model
                 self.step = self.model.step
-                self.proba_step = self.model.proba_step
                 self.value = self.model.value
                 self.initial_state = self.model.initial_state
                 tf.global_variables_initializer().run(session=self.sess)

@@ -69,7 +69,6 @@ class A2C(BaseRLModel):
         self.train_model = None
         self.model = None
         self.step = None
-        self.proba_step = None
         self.value = None
         self.initial_state = None
         self.learning_rate_schedule = None
@@ -148,7 +147,6 @@ class A2C(BaseRLModel):
                 self.train_model = train_model
                 self.model = model
                 self.step = model.step
-                self.proba_step = model.proba_step
                 self.value = model.value
                 self.initial_state = model.initial_state
                 tf.global_variables_initializer().run(session=self.sess)

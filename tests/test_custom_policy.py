@@ -57,9 +57,6 @@ def test_custom_policy(model_name):
         obs = env.reset()
         for _ in range(N_TRIALS):
             action, _ = model.predict(obs)
-            # Test action probability method
-            if model_name != 'ddpg':
-                model.action_probability(obs)
             obs, _, _, _ = env.step(action)
         # saving
         model.save("./test_model")

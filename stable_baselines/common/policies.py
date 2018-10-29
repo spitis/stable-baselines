@@ -96,11 +96,12 @@ class BasePolicy(ABC):
     :param goal_space: (Gym Space) The goal space of the goal-based environment
     :param goal_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for goal placeholder
         and the processed goal placeholder respectivly
+    :param action_ph: (TensorFlow Tensor) a batch_size x flattened_ac_space_size placeholder for action-based critic
     """
 
   def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, *,
                layers=None, scale=False, obs_phs=None, dueling=True, is_DQN=False, goal_space=None,
-               goal_phs=None):
+               goal_phs=None, action_ph=None):
     self.n_env = n_env
     self.n_steps = n_steps
 
@@ -122,7 +123,7 @@ class BasePolicy(ABC):
                                       name="states_ph")  # states
 
       # action placeholder
-      self.action_ph = None
+      self.action_ph = action_ph
 
       # goal placeholder, if applicable for the environment
       if goal_space is not None:
@@ -170,9 +171,8 @@ class BasePolicy(ABC):
       self.action = self.proba_distribution.sample()
       self.deterministic_action = self.proba_distribution.mode()
       self.neglogp = self.proba_distribution.neglogp(self.action)
-      self.policy_proba = self.policy
       if self.is_discrete:
-        self.policy_proba = tf.nn.softmax(self.policy_proba)
+        self.policy = tf.nn.softmax(self.policy)
       self._value = self.value_fn[:, 0]
 
   def step(self, obs, state=None, mask=None, deterministic=True, goal=None):
@@ -186,24 +186,6 @@ class BasePolicy(ABC):
         :return: ([float], [float], [float], [float]) actions, values, states, neglogp
         """
     raise NotImplementedError
-
-  def proba_step(self, obs, state=None, mask=None, goal=None):
-    """
-        Returns the action probability for a single step
-
-        :param obs: ([float] or [int]) The current observation of the environment
-        :param state: ([float]) The last states (used in recurrent policies)
-        :param mask: ([float]) The last masks (used in recurrent policies)
-        :return: ([float]) the action probability
-        """
-    feed_dict = {self.obs_ph: obs}
-    if state is not None:
-      feed_dict[self.states_ph] = state
-    if mask is not None:
-      feed_dict[self.masks_ph] = mask
-    if goal is not None:
-      feed_dict[self.goal_ph] = goal
-    return self.sess.run(self.policy_proba, feed_dict=feed_dict)
 
   def value(self, obs, *, action=None, state=None, mask=None, goal=None):
     """
@@ -253,12 +235,13 @@ class FeedForwardPolicy(BasePolicy):
 
   def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, layers=None,
                cnn_extractor=nature_cnn, feature_extraction="cnn", obs_phs=None, layer_norm=False,
-               dueling=True, is_DQN=False, action_ph=None, goal_space=None, **kwargs):
+               dueling=True, is_DQN=False, action_ph=None, goal_space=None, activ=tf.nn.relu,
+               **kwargs):
 
-    super(FeedForwardPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch,
-                                            n_lstm=256, dueling=dueling, is_DQN=is_DQN, reuse=reuse,
-                                            layers=layers, scale=(feature_extraction == "cnn"),
-                                            obs_phs=obs_phs, goal_space=goal_space)
+    super(FeedForwardPolicy, self).__init__(
+        sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, dueling=dueling,
+        is_DQN=is_DQN, reuse=reuse, action_ph=action_ph, layers=layers,
+        scale=(feature_extraction == "cnn"), obs_phs=obs_phs, goal_space=goal_space)
 
     with tf.variable_scope("model", reuse=reuse):
       if feature_extraction == "cnn":
@@ -269,7 +252,7 @@ class FeedForwardPolicy(BasePolicy):
       if self.action_ph is not None:
         extracted_features = tf.concat(axis=1, values=[extracted_features, self.action_ph])
 
-      activ = tf.nn.relu
+      activ = activ
       pi_h = extracted_features
       vf_h = extracted_features
       for i, layer_size in enumerate(self.layers):
@@ -345,9 +328,10 @@ class MlpPolicy(FeedForwardPolicy):
 
   def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=False, dueling=True,
                is_DQN=False, goal_space=None, **_kwargs):
-    super(MlpPolicy, self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse,
-                                    feature_extraction="mlp", dueling=dueling, is_DQN=is_DQN,
-                                    goal_space=goal_space, **_kwargs)
+    super(MlpPolicy,
+          self).__init__(sess, ob_space, ac_space, n_env, n_steps, n_batch, reuse=reuse,
+                         feature_extraction="mlp", layers=[64, 64], dueling=dueling, is_DQN=is_DQN,
+                         goal_space=goal_space, activ=tf.nn.tanh, **_kwargs)
 
 
 class CnnPolicy(FeedForwardPolicy):

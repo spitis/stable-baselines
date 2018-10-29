@@ -80,7 +80,6 @@ class DQN(BaseRLModel):
         self.model = None
         self.update_target = None
         self.act = None
-        self.proba_step = None
         self.replay_buffer = None
         self.beta_schedule = None
         self.exploration = None
@@ -112,7 +111,6 @@ class DQN(BaseRLModel):
                     param_noise=self.param_noise,
                     sess=self.sess
                 )
-                self.proba_step = self.model.proba_step
                 self.params = find_trainable_variables("deepq")
 
                 # Initialize the parameters and copy them to the target network.
@@ -258,21 +256,6 @@ class DQN(BaseRLModel):
             actions = actions[0]
 
         return actions, None
-
-    def action_probability(self, observation, state=None, mask=None):
-        observation = np.array(observation)
-        vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
-
-        observation = observation.reshape((-1,) + self.observation_space.shape)
-        
-        actions_proba = self.proba_step(observation, state, mask)
-
-        if not vectorized_env:
-            if state is not None:
-                raise ValueError("Error: The environment must be vectorized when using recurrent policies.")
-            actions_proba = actions_proba[0]
-
-        return actions_proba
 
     def save(self, save_path):
         # params

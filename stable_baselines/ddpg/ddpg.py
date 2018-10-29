@@ -963,18 +963,6 @@ class DDPG(BaseRLModel):
 
         return actions, None
 
-    def action_probability(self, observation, state=None, mask=None):
-        observation = np.array(observation)
-        vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
-
-        observation = observation.reshape((-1,) + self.observation_space.shape)
-
-        # here there are no action probabilities, as DDPG is continuous
-        if vectorized_env:
-            return self.sess.run(self.policy_tf.policy_proba, feed_dict={self.obs_train: observation})
-        else:
-            return self.sess.run(self.policy_tf.policy_proba, feed_dict={self.obs_train: observation})[0]
-
     def save(self, save_path):
         data = {
             "observation_space": self.observation_space,
@@ -1009,3 +997,20 @@ class DDPG(BaseRLModel):
         params = self.sess.run(self.params)
 
         self._save_to_file(save_path, data=data, params=params)
+
+    @classmethod
+    def load(cls, load_path, env=None, **kwargs):
+        data, params = cls._load_from_file(load_path)
+
+        model = cls(None, env, _init_setup_model=False)
+        model.__dict__.update(data)
+        model.__dict__.update(kwargs)
+        model.set_env(env)
+        model._setup_model()
+
+        restores = []
+        for param, loaded_p in zip(model.params, params):
+            restores.append(param.assign(loaded_p))
+        model.sess.run(restores)
+
+        return model

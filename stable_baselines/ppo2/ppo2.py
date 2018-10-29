@@ -86,7 +86,6 @@ class PPO2(BaseRLModel):
         self.train_model = None
         self.model = None
         self.step = None
-        self.proba_step = None
         self.value = None
         self.initial_state = None
         self.n_batch = None
@@ -194,7 +193,6 @@ class PPO2(BaseRLModel):
                 self.train_model = train_model
                 self.model = model
                 self.step = model.step
-                self.proba_step = model.proba_step
                 self.value = model.value
                 self.initial_state = model.initial_state
                 tf.global_variables_initializer().run(session=self.sess)  # pylint: disable=E1101
