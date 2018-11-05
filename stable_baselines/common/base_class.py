@@ -121,8 +121,12 @@ class BaseRLModel(ABC):
           "Error: trying to replace the current environment with None")
 
     # sanity checking the environment
-    assert self.observation_space == env.observation_space, \
-        "Error: the environment passed must have at least the same observation space as the model was trained on."
+    if type(env.observation_space) == gym.spaces.dict_space.Dict:
+        assert self.observation_space == env.observation_space.spaces["observation"], \
+            "Error: the Goal-based environment passed must have at least the same observation space as the model was trained on."
+    else:
+        assert self.observation_space == env.observation_space, \
+            "Error: the environment passed must have at least the same observation space as the model was trained on."
     assert self.action_space == env.action_space, \
         "Error: the environment passed must have at least the same action space as the model was trained on."
     if self._requires_vec_env:
