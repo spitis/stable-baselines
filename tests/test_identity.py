@@ -79,10 +79,10 @@ def test_identity_simple_ddpg():
 
 @pytest.mark.slow
 def test_identity_ddpg():
-    ""
+    """
     Test if the algorithm (with a given policy)
     can learn an identity transformation (i.e. return observation as an action)
-    ""
+    """
     env = DummyVecEnv([lambda: IdentityEnvBox(eps=0.5)])
 
     std = 0.2

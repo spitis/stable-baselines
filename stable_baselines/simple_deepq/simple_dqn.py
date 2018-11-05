@@ -43,7 +43,7 @@ class SimpleDQN(SimpleRLModel):
                target_network_update_freq=500, double_q=True, grad_norm_clipping=10., verbose=0,
                tensorboard_log=None, _init_setup_model=True):
 
-    super(SimpleDQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=False)
+    super(SimpleDQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True)
 
     self.learning_rate = learning_rate
     self.gamma = gamma
@@ -68,7 +68,7 @@ class SimpleDQN(SimpleRLModel):
     self.tensorboard_log = tensorboard_log
 
     # Below props are set in self._setup_new_task()
-    self.reset = True
+    self.reset = None
     self.global_step = 0
     self.task_step = 0
     self.replay_buffer = None
@@ -92,13 +92,13 @@ class SimpleDQN(SimpleRLModel):
         with tf.variable_scope("deepq"):
 
           # policy function
-          policy = self.policy(self.sess, self.observation_space, self.action_space, n_env=1,
+          policy = self.policy(self.sess, self.observation_space, self.action_space, n_env=self.n_envs,
                                n_steps=1, n_batch=None, is_DQN=True, goal_space=self.goal_space)
 
           # exploration placeholders & online action with exploration noise
           epsilon_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
           threshold_ph = tf.placeholder_with_default(0., shape=(), name="param_noise_threshold_ph")
-          reset_ph = tf.placeholder_with_default(False, (), name="reset_ph")
+          reset_ph = tf.placeholder(tf.float32, shape=[None, 1], name="reset_ph")
 
           if not self.param_noise:
             act = epsilon_greedy_wrapper(policy, epsilon_ph)
@@ -107,13 +107,13 @@ class SimpleDQN(SimpleRLModel):
 
           # create target q network for training
           with tf.variable_scope("target_q_func", reuse=False):
-            target_policy = self.policy(self.sess, self.observation_space, self.action_space, 1, 1,
+            target_policy = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                         None, reuse=False, is_DQN=True, goal_space=self.goal_space)
 
           # setup double q network; because of the outer_scope_getter, this reuses policy variables
           with tf.variable_scope("double_q", reuse=True,
                                  custom_getter=tf_util.outer_scope_getter("double_q")):
-            double_policy = self.policy(self.sess, self.observation_space, self.action_space, 1, 1,
+            double_policy = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                         None, reuse=True, obs_phs=(target_policy.obs_ph,
                                                                    target_policy.processed_x),
                                         is_DQN=True, goal_space=self.goal_space)
@@ -206,7 +206,7 @@ class SimpleDQN(SimpleRLModel):
   def _setup_new_task(self, total_timesteps):
     """Sets up new task by reinitializing step, replay buffer, and exploration schedule"""
     self.task_step = 0
-    self.reset = True
+    self.reset = np.ones([self.n_envs, 1])
 
     items = [("observations0", self.observation_space.shape), ("actions", self.action_space.shape),
              ("rewards", (1,)), ("observations1", self.observation_space.shape), ("terminals1",
@@ -226,73 +226,72 @@ class SimpleDQN(SimpleRLModel):
     """Called during training loop to get online action (with exploration)"""
     if self.goal_space is not None:
       feed_dict = {
-          self.model.obs_ph: np.array(obs["observation"])
-                             [np.newaxis],  # adds to new axis to convert to batch size of 1
-          self.model.goal_ph: np.array(obs["desired_goal"])[np.newaxis],
-          self.epsilon_ph: self.exploration.value(self.task_step)
+          self.model.obs_ph: np.array(obs["observation"]),
+          self.model.goal_ph: np.array(obs["desired_goal"]),
+          self.epsilon_ph: self.exploration.value(self.task_step),
+          self.reset_ph: self.reset
       }
     else:
       feed_dict = {
-          self.model.obs_ph: np.array(obs)
-                             [np.newaxis],  # adds to new axis to convert to batch size of 1
-          self.epsilon_ph: self.exploration.value(self.task_step)
+          self.model.obs_ph: np.array(obs), 
+          self.epsilon_ph: self.exploration.value(self.task_step),
+          self.reset_ph: self.reset
       }
 
-    if self.reset:
-      self.reset = False
-      feed_dict[self.reset_ph] = True
-
-    return self.sess.run(
-        self._act, feed_dict=feed_dict)[0]  # indexes into batch to get first (and only) action
+    return self.sess.run(self._act, feed_dict=feed_dict)
 
   def _process_experience(self, obs, action, rew, new_obs, done):
     """Called during training loop after action is taken; includes learning;
         returns a summary"""
+
+    done = np.expand_dims(done.astype(np.float32),1)
+    rew = np.expand_dims(rew, 1)
+    
     goal_agent = self.goal_space is not None
 
-    summary = None
-    self.task_step += 1
-    self.global_step += 1
-
     # Reset the episode if done
-    if done:
-      self.reset = True
+    self.reset = done
 
     # Store transition in the replay buffer.
     if goal_agent:
-      self.replay_buffer.add(obs['observation'], action, rew, new_obs['observation'], \
-                          float(done), new_obs['achieved_goal'], new_obs['desired_goal'])
+      self.replay_buffer.add_batch(obs['observation'], action, rew, new_obs['observation'], \
+                          done, new_obs['achieved_goal'], new_obs['desired_goal'])
     else:
-      self.replay_buffer.add(obs, action, rew, new_obs, float(done))
+      self.replay_buffer.add_batch(obs, action, rew, new_obs, done)
+    
+    summaries = []
+    self.global_step += self.n_envs
+    for _ in range(self.n_envs):
+      self.task_step += 1
+      # If have enough data, train on it.
+      if self.task_step > self.learning_starts:
+        if self.task_step % self.train_freq == 0:
+          if goal_agent:
+            obses_t, actions, rewards, obses_tp1, dones, achieved_g, desired_g =\
+                                                          self.replay_buffer.sample(self.batch_size)
+          else:
+            obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
 
-    # If have enough data, train on it.
-    if self.task_step > self.learning_starts:
-      if self.task_step % self.train_freq == 0:
-        if goal_agent:
-          obses_t, actions, rewards, obses_tp1, dones, achieved_g, desired_g =\
-                                                        self.replay_buffer.sample(self.batch_size)
-        else:
-          obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
+          rewards = np.squeeze(rewards, 1)
+          dones = np.squeeze(dones, 1)
 
-        rewards = np.squeeze(rewards, 1)
-        dones = np.squeeze(dones, 1)
+          feed_dict = {
+              self._obs1_ph: obses_t,
+              self._action_ph: actions,
+              self._reward_ph: rewards,
+              self._obs2_ph: obses_tp1,
+              self._dones_ph: dones
+          }
+          if goal_agent:
+            feed_dict[self._goal_ph]: desired_g
 
-        feed_dict = {
-            self._obs1_ph: obses_t,
-            self._action_ph: actions,
-            self._reward_ph: rewards,
-            self._obs2_ph: obses_tp1,
-            self._dones_ph: dones
-        }
-        if goal_agent:
-          feed_dict[self._goal_ph]: desired_g
+          _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
+          summaries.append(summary)
 
-        _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
+        if self.task_step % self.target_network_update_freq == 0:
+          self.sess.run(self.update_target_network)
 
-      if self.task_step % self.target_network_update_freq == 0:
-        self.sess.run(self.update_target_network)
-
-    return summary
+    return summaries
 
   def predict(self, observation, state=None, mask=None, deterministic=True, goal=None):
     observation = np.array(observation)

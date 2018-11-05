@@ -597,11 +597,14 @@ class _Runner(AbstractEnvRunner):
         model_policy = self.model.model
         for _ in range(self.n_steps):
             actions, _, states, _ = self.model.step(self.obs, self.states, self.dones)
-            mus = model_policy.sess.run(model_policy.policy, feed_dict={
-              model_policy.obs_ph: self.obs,
-              #model_policy.states_ph: self.states,
-              #model_policy.masks_ph: self.dones
-            })
+            feed_dict={
+              model_policy.obs_ph: self.obs
+            }
+            if self.states is not None:
+              feed_dict[model_policy.states_ph] = self.states
+              feed_dict[model_policy.masks_ph] = self.dones
+            
+            mus = model_policy.sess.run(model_policy.policy, feed_dict)
             mb_obs.append(np.copy(self.obs))
             mb_actions.append(actions)
             mb_mus.append(mus)
