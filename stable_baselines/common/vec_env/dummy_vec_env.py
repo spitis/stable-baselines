@@ -48,14 +48,21 @@ class DummyVecEnv(VecEnv):
             if self.buf_dones[env_idx]:
                 obs = self.envs[env_idx].reset()
             self._save_obs(env_idx, obs)
-        return (np.copy(self._obs_from_buf()), np.copy(self.buf_rews), np.copy(self.buf_dones),
+        if self.keys == [None]:
+            return (np.copy(self._obs_from_buf()), np.copy(self.buf_rews), np.copy(self.buf_dones),
                 self.buf_infos.copy())
+        else:
+            return (np.copy(self._obs_from_buf()).item(), np.copy(self.buf_rews), np.copy(self.buf_dones),
+                    self.buf_infos.copy())
 
     def reset(self):
         for env_idx in range(self.num_envs):
             obs = self.envs[env_idx].reset()
             self._save_obs(env_idx, obs)
-        return np.copy(self._obs_from_buf())
+        if self.keys == [None]:
+            return np.copy(self._obs_from_buf())
+        else:
+            return np.copy(self._obs_from_buf()).item() # Otherwise this returns an ndarray
 
     def close(self):
         return
