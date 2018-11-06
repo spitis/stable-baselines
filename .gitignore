@@ -27,6 +27,9 @@ keys/
 
 logs/
 
+.vscode
+
+*.ipynb
 .ipynb_checkpoints
 ghostdriver.log
 

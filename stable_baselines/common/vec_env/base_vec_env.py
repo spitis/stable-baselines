@@ -45,13 +45,13 @@ class VecEnv(ABC):
     def reset(self):
         """
         Reset all the environments and return an array of
-        observations, or a tuple of observation arrays.
+        observations, or a dict of observation arrays (for goal envs).
 
         If step_async is still doing work, that work will
         be cancelled and step_wait() should not be called
         until step_async() is invoked again.
 
-        :return: ([int] or [float]) observation
+        :return: ([int] or [float] or dict) observation
         """
         pass
 
@@ -72,7 +72,7 @@ class VecEnv(ABC):
         """
         Wait for the step taken with step_async().
 
-        :return: ([int] or [float], [float], [bool], dict) observation, reward, done, information
+        :return: ([int] or [float] or dict, [float], [bool], dict) observation, reward, done, information
         """
         pass
 
@@ -88,7 +88,7 @@ class VecEnv(ABC):
         Step the environments with the given action
 
         :param actions: ([int] or [float]) the action
-        :return: ([int] or [float], [float], [bool], dict) observation, reward, done, information
+        :return: ([int] or [float] or dict, [float], [bool], dict) observation, reward, done, information
         """
         self.step_async(actions)
         return self.step_wait()
