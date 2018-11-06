@@ -4,6 +4,7 @@ import numpy as np
 
 from stable_baselines.common.vec_env import VecEnv, CloudpickleWrapper
 from stable_baselines.common.tile_images import tile_images
+from gym import spaces
 
 
 def _worker(remote, parent_remote, env_fn_wrapper):
@@ -62,6 +63,12 @@ class SubprocVecEnv(VecEnv):
 
         self.remotes[0].send(('get_spaces', None))
         observation_space, action_space = self.remotes[0].recv()
+        if isinstance(observation_space, spaces.Dict):
+          dummy_env = env_fns[0]()
+          if dummy_env.compute_reward is not None:
+            self.compute_reward = dummy_env.compute_reward
+          self.goal_env = True
+          self.goal_keys = tuple(observation_space.spaces.keys())
         VecEnv.__init__(self, len(env_fns), observation_space, action_space)
 
     def step_async(self, actions):
@@ -73,12 +80,21 @@ class SubprocVecEnv(VecEnv):
         results = [remote.recv() for remote in self.remotes]
         self.waiting = False
         obs, rews, dones, infos = zip(*results)
-        return np.stack(obs), np.stack(rews), np.stack(dones), infos
+        if self.goal_env:
+          obs = {k:np.stack([o[k] for o in obs]) for k in self.goal_keys}
+        else:
+          obs = np.stack(obs)
+        return obs, np.stack(rews), np.stack(dones), infos
 
     def reset(self):
         for remote in self.remotes:
             remote.send(('reset', None))
-        return np.stack([remote.recv() for remote in self.remotes])
+        obs = [remote.recv() for remote in self.remotes]
+        if self.goal_env:
+          obs = {k:np.stack([o[k] for o in obs]) for k in self.goal_keys}
+        else:
+          obs = np.stack(obs)
+        return obs
 
     def close(self):
         if self.closed:
