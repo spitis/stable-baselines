@@ -23,7 +23,9 @@ class DummyVecEnv(VecEnv):
 
         if isinstance(obs_space, spaces.Dict):
             assert isinstance(obs_space.spaces, OrderedDict)
-            subspaces = obs_space.spaces
+            subspaces = obs_space.spaces 
+            if env.compute_reward is not None:
+              self.compute_reward = env.compute_reward
         else:
             subspaces = {None: obs_space}
 
@@ -52,7 +54,7 @@ class DummyVecEnv(VecEnv):
             return (np.copy(self._obs_from_buf()), np.copy(self.buf_rews), np.copy(self.buf_dones),
                 self.buf_infos.copy())
         else:
-            return (np.copy(self._obs_from_buf()).item(), np.copy(self.buf_rews), np.copy(self.buf_dones),
+            return ({k:np.copy(v) for k, v in self._obs_from_buf().items()}, np.copy(self.buf_rews), np.copy(self.buf_dones),
                     self.buf_infos.copy())
 
     def reset(self):
@@ -62,7 +64,7 @@ class DummyVecEnv(VecEnv):
         if self.keys == [None]:
             return np.copy(self._obs_from_buf())
         else:
-            return np.copy(self._obs_from_buf()).item() # Otherwise this returns an ndarray
+            return {k:np.copy(v) for k, v in self._obs_from_buf().items()}
 
     def close(self):
         return
