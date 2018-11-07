@@ -52,6 +52,7 @@ class SubprocVecEnv(VecEnv):
         self.waiting = False
         self.closed = False
         n_envs = len(env_fns)
+
         self.remotes, self.work_remotes = zip(*[Pipe() for _ in range(n_envs)])
         self.processes = [Process(target=_worker, args=(work_remote, remote, CloudpickleWrapper(env_fn)))
                           for (work_remote, remote, env_fn) in zip(self.work_remotes, self.remotes, env_fns)]
@@ -63,6 +64,9 @@ class SubprocVecEnv(VecEnv):
 
         self.remotes[0].send(('get_spaces', None))
         observation_space, action_space = self.remotes[0].recv()
+
+        self.goal_env = False
+        self.goal_keys = None
         if isinstance(observation_space, spaces.Dict):
           dummy_env = env_fns[0]()
           if dummy_env.compute_reward is not None:

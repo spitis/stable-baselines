@@ -189,6 +189,7 @@ class SimpleDQN(SimpleRLModel):
         self._goal_ph = policy.goal_ph
         self.update_target_network = update_target_network
         self.model = policy
+        self.target_model = target_policy
 
         self.epsilon_ph = epsilon_ph
         self.reset_ph = reset_ph
@@ -298,7 +299,7 @@ class SimpleDQN(SimpleRLModel):
     vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
 
     observation = observation.reshape((-1,) + self.observation_space.shape)
-    actions = self.sess.run(self.model.deterministic_action, {self._obs1_ph: observation})
+    actions = self.sess.run(self.target_model.deterministic_action, {self._obs2_ph: observation})
 
     if not vectorized_env:
         actions = actions[0]

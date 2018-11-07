@@ -16,10 +16,10 @@ def callback(lcl, _glb):
     :return: (bool) is solved
     """
     # stop training if reward exceeds 199
-    if len(lcl['episode_rewards'][-101:-1]) == 0:
+    if len(lcl['legacy_episode_rewards'][-101:-1]) == 0:
         mean_100ep_reward = -np.inf
     else:
-        mean_100ep_reward = round(float(np.mean(lcl['episode_rewards'][-101:-1])), 1)
+        mean_100ep_reward = round(float(np.mean(lcl['legacy_episode_rewards'][-101:-1])), 1)
     is_solved = lcl['step'] > 100 and mean_100ep_reward >= 199
     return is_solved
 

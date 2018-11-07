@@ -238,6 +238,7 @@ class SimpleDDPG(SimpleRLModel):
         self._goal_ph = None  # TODO
         self.update_target_network = update_target_network
         self.model = actor_branch
+        self.target_model = target_actor_branch
 
         with tf.variable_scope("ddpg"):
           self.params = tf.trainable_variables()
@@ -334,7 +335,7 @@ class SimpleDDPG(SimpleRLModel):
     vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
 
     observation = observation.reshape((-1,) + self.observation_space.shape)
-    actions = self.sess.run(self.model.policy, {self._obs1_ph: observation})
+    actions = self.sess.run(self.target_model.policy, {self._obs2_ph: observation})
 
     if not vectorized_env:
         actions = actions[0]
