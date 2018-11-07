@@ -90,12 +90,12 @@ class BasePolicy(ABC):
     :param layers: ([int]) The size of the Neural network for the policy (if None, default to [64, 64])
     :param scale: (bool) whether or not to scale the input
     :param obs_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for observation placeholder
-        and the processed observation placeholder respectivly
+        and the processed observation placeholder respectively
     :param dueling: (bool) For DQN only: if true double the output MLP to compute a baseline for action scores
     :param is_DQN: (bool) For DQN only: whether it is a DQN
     :param goal_space: (Gym Space) The goal space of the goal-based environment
     :param goal_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for goal placeholder
-        and the processed goal placeholder respectivly
+        and the processed goal placeholder respectively
     :param action_ph: (TensorFlow Tensor) a batch_size x flattened_ac_space_size placeholder for action-based critic
     """
 
@@ -128,7 +128,7 @@ class BasePolicy(ABC):
       # goal placeholder, if applicable for the environment
       if goal_space is not None:
         if goal_phs is None:
-          self.goal_ph, self.processed_g = observation_input(goal_space, n_batch, scale=scale)
+          self.goal_ph, self.processed_g = observation_input(goal_space, n_batch, scale=scale, name='Goal')
         else:
           self.goal_ph, self.processed_g = goal_phs
       else:
@@ -241,13 +241,18 @@ class FeedForwardPolicy(BasePolicy):
     super(FeedForwardPolicy, self).__init__(
         sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, dueling=dueling,
         is_DQN=is_DQN, reuse=reuse, action_ph=action_ph, layers=layers,
-        scale=(feature_extraction == "cnn"), obs_phs=obs_phs, goal_space=goal_space)
+        scale=(feature_extraction == "cnn"), obs_phs=obs_phs, goal_space=goal_space, **kwargs)
 
     with tf.variable_scope("model", reuse=reuse):
-      if feature_extraction == "cnn":
-        extracted_features = cnn_extractor(self.processed_x, **kwargs)
+      if goal_space is not None:
+        input_features = tf.concat(axis=1, values=[self.processed_x, self.processed_g])
       else:
-        extracted_features = tf.layers.flatten(self.processed_x)
+        input_features = self.processed_x
+
+      if feature_extraction == "cnn":
+        extracted_features = cnn_extractor(input_features, **kwargs)
+      else:
+        extracted_features = tf.layers.flatten(input_features)
 
       if self.action_ph is not None:
         extracted_features = tf.concat(axis=1, values=[extracted_features, self.action_ph])
@@ -367,7 +372,7 @@ class LnMlpPolicy(FeedForwardPolicy):
     :param n_batch: (int) The number of batch to run (n_envs * n_steps)
     :param reuse: (bool) If the policy is reusable or not
     :param obs_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for observation placeholder
-        and the processed observation placeholder respectivly
+        and the processed observation placeholder respectively
     :param dueling: (bool) if true double the output MLP to compute a baseline for action scores
     :param _kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
@@ -392,7 +397,7 @@ class LnCnnPolicy(FeedForwardPolicy):
     :param n_batch: (int) The number of batch to run (n_envs * n_steps)
     :param reuse: (bool) If the policy is reusable or not
     :param obs_phs: (TensorFlow Tensor, TensorFlow Tensor) a tuple containing an override for observation placeholder
-        and the processed observation placeholder respectivly
+        and the processed observation placeholder respectively
     :param dueling: (bool) if true double the output MLP to compute a baseline for action scores
     :param _kwargs: (dict) Extra keyword arguments for the nature CNN feature extraction
     """
@@ -434,11 +439,16 @@ class LstmPolicy(BasePolicy):
                          dueling=dueling, is_DQN=is_DQN, goal_space=goal_space)
 
     with tf.variable_scope("model", reuse=reuse):
+      if goal_space is not None:
+        input_features = tf.concat(axis=1, values=[self.processed_x, self.processed_g])
+      else:
+        input_features = self.processed_x
+
       if feature_extraction == "cnn":
-        extracted_features = cnn_extractor(self.processed_x, **kwargs)
+        extracted_features = cnn_extractor(input_features, **kwargs)
       else:
         activ = tf.tanh
-        extracted_features = tf.layers.flatten(self.processed_x)
+        extracted_features = tf.layers.flatten(input_features)
         for i, layer_size in enumerate(self.layers):
           extracted_features = activ(
               linear(extracted_features, 'pi_fc' + str(i), n_hidden=layer_size,

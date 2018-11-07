@@ -116,7 +116,8 @@ class SimpleDQN(SimpleRLModel):
             double_policy = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
                                         None, reuse=True, obs_phs=(target_policy.obs_ph,
                                                                    target_policy.processed_x),
-                                        is_DQN=True, goal_space=self.goal_space)
+                                        is_DQN=True, goal_space=self.goal_space, goal_phs=(target_policy.goal_ph,
+                                                                                           target_policy.processed_g))
 
         with tf.variable_scope("loss"):
 
@@ -187,6 +188,7 @@ class SimpleDQN(SimpleRLModel):
         self._obs2_ph = target_policy.obs_ph
         self._dones_ph = done_mask_ph
         self._goal_ph = policy.goal_ph
+        self._goal2_ph = target_policy.goal_ph
         self.update_target_network = update_target_network
         self.model = policy
         self.target_model = target_policy
@@ -244,7 +246,6 @@ class SimpleDQN(SimpleRLModel):
   def _process_experience(self, obs, action, rew, new_obs, done):
     """Called during training loop after action is taken; includes learning;
         returns a summary"""
-
     done = np.expand_dims(done.astype(np.float32),1)
     rew = np.expand_dims(rew, 1)
     
@@ -281,10 +282,11 @@ class SimpleDQN(SimpleRLModel):
               self._action_ph: actions,
               self._reward_ph: rewards,
               self._obs2_ph: obses_tp1,
-              self._dones_ph: dones
+              self._dones_ph: dones,
           }
           if goal_agent:
-            feed_dict[self._goal_ph]: desired_g
+            feed_dict[self._goal_ph] = desired_g
+            feed_dict[self._goal2_ph] = desired_g # Assuming that the goal does not change in episode
 
           _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
           summaries.append(summary)
@@ -295,11 +297,23 @@ class SimpleDQN(SimpleRLModel):
     return summaries
 
   def predict(self, observation, state=None, mask=None, deterministic=True, goal=None):
-    observation = np.array(observation)
-    vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
+    goal_agent = self.goal_space is not None
 
+    if not goal_agent:
+        observation = np.array(observation)
+    else:
+        desired_goal = np.array(observation['desired_goal'])
+        desired_goal = desired_goal.reshape((-1,) + self.goal_space.shape)
+        observation = np.array(observation['observation'])
+
+    vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
     observation = observation.reshape((-1,) + self.observation_space.shape)
-    actions = self.sess.run(self.target_model.deterministic_action, {self._obs2_ph: observation})
+
+    if goal_agent:
+        actions = self.sess.run(self.target_model.deterministic_action, {self._obs2_ph: observation,
+                                                                  self._goal2_ph: desired_goal})
+    else:
+        actions = self.sess.run(self.target_model.deterministic_action, {self._obs2_ph: observation})
 
     if not vectorized_env:
         actions = actions[0]
