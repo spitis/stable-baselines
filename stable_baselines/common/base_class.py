@@ -430,7 +430,7 @@ class SimpleRLModel(BaseRLModel):
             if len(legacy_episode_rewards[-101:-1]) == 0:
               mean_100ep_reward = -np.inf
             else:
-              mean_100ep_reward = round(float(np.mean(legacy_episode_rewards[-101:-1])), 1)
+              mean_100ep_reward = round(float(np.mean(legacy_episode_rewards[-101:-1])), 2)
 
             logger.record_tabular("steps", self.task_step)
             logger.record_tabular("episodes", num_episodes)

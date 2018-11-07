@@ -3,7 +3,7 @@ import argparse
 import numpy as np
 import tensorflow as tf
 
-from stable_baselines.a2c.utils import conv, conv_to_fc
+from stable_baselines.a2c.utils import conv_to_fc
 
 from stable_baselines.simple_deepq import SimpleDQN as DQN
 from stable_baselines.common.policies import FeedForwardPolicy
@@ -18,12 +18,10 @@ def gridworld_cnn(scaled_images, **kwargs):
     :param kwargs: (dict) Extra keywords parameters for the convolutional layers of the CNN
     :return: (TensorFlow Tensor) The CNN output layer
     """
-  activ = tf.nn.relu
-  layer_1 = activ(
-      conv(scaled_images, 'c1', n_filters=32, filter_size=3, stride=1, init_scale=np.sqrt(2)))
-  layer_2 = activ(
-      conv(layer_1, 'c2', n_filters=64, filter_size=3, stride=2, init_scale=np.sqrt(2)))
-  return conv_to_fc(layer_2)
+  activ = tf.nn.tanh
+  layer_1 = tf.layers.conv2d(scaled_images, filters=64, kernel_size=5, padding='SAME', activation=activ)
+  f = conv_to_fc(layer_1)
+  return tf.layers.dense(layer_1, 256, activation=tf.nn.relu)
 
 class GridWorldCnnPolicy(FeedForwardPolicy):
   """
@@ -33,7 +31,7 @@ class GridWorldCnnPolicy(FeedForwardPolicy):
   def __init__(self, *args, **kwargs):
       super(GridWorldCnnPolicy, self).__init__(*args, **kwargs,
                                     feature_extraction="cnn",
-                                    cnn_extractor=gridworld_cnn)
+                                    cnn_extractor=gridworld_cnn, layers=[128])
 
 
 class GridWorldMlpPolicy(FeedForwardPolicy):
@@ -50,10 +48,10 @@ def main(args):
     """
     Train and save the DQN model, for the cartpole problem
 
-    :param args: (ArgumentParser) the input arguments
+    :param args: (ArgumentParser) the input arguments100000
     """
     grid_file = 'room_5x5_empty.txt'
-    env = GoalGridWorldEnv(grid_size=5, max_step=12,grid_file=grid_file)
+    env = GoalGridWorldEnv(grid_size=5, max_step=18, grid_file=grid_file)
     if args.model_type == "mlp":
         policy = GridWorldMlpPolicy
     elif args.model_type == "cnn":
@@ -63,10 +61,17 @@ def main(args):
         env=env,
         policy=policy,
         learning_rate=1e-4,
+        gamma=0.95,
+        learning_starts=1000,
+        verbose=1,
+        batch_size=128,
         buffer_size=100000,
-        exploration_fraction=0.1,
+        exploration_fraction=0.8,
         exploration_final_eps=0.02,
+        target_network_update_frac=0.05,
+        target_network_update_freq=20,
     )
+    assert model.goal_space is not None
     model.learn(total_timesteps=args.max_timesteps)
 
     print("Saving model to goalgridworld_model_{}_{}.pkl".format(args.model_type, args.max_timesteps))

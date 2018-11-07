@@ -108,6 +108,7 @@ class BasePolicy(ABC):
     if layers is None:
       layers = [512]
     self.layers = layers
+    
     assert len(layers) >= 1, "Error: must have at least one hidden layer for the policy."
 
     with tf.name_scope("input"):
@@ -245,7 +246,8 @@ class FeedForwardPolicy(BasePolicy):
 
     with tf.variable_scope("model", reuse=reuse):
       if goal_space is not None:
-        input_features = tf.concat(axis=1, values=[self.processed_x, self.processed_g])
+        input_features = self.processed_x - self.processed_g
+        print(input_features.get_shape())
       else:
         input_features = self.processed_x
 
