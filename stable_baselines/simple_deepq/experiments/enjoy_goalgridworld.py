@@ -18,7 +18,7 @@ def main(args):
     model_filename = "goalgridworld_model_{}_{}.pkl".format(args.model_type, args.max_timesteps)
     model = DQN.load(model_filename, env, goal_space=env.observation_space.spaces['desired_goal'])
 
-    max_num_eps = 10
+    max_num_eps = 20
     num_eps = 0
     num_success = 0
     while (num_eps < max_num_eps):

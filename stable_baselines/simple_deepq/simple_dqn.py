@@ -2,6 +2,7 @@ import tensorflow as tf
 import numpy as np
 import gym
 import trfl
+import copy
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
@@ -256,7 +257,6 @@ class SimpleDQN(SimpleRLModel):
       items += [("desired_goal", self.env.observation_space.spaces['desired_goal'].shape)]
 
     self.replay_buffer = ReplayBuffer(self.buffer_size, items)
-    self.hindsight_subbuffer = EpisodicBuffer(self.n_envs)
 
     if self.hindsight_mode == 'final':
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
@@ -265,6 +265,9 @@ class SimpleDQN(SimpleRLModel):
       self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
     else:
       self.hindsight_fn = None
+
+    
+    self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn)
 
     # Create the schedule for exploration starting from 1.
     self.exploration = LinearSchedule(
@@ -316,7 +319,7 @@ class SimpleDQN(SimpleRLModel):
           # commit the subbuffer
           self.hindsight_subbuffer.commit_subbuffer(idx)
           if len(self.hindsight_subbuffer) == self.n_envs:
-            for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.map(self.hindsight_fn)):
+            for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.process_trajectories()):
               self.replay_buffer.add(*hindsight_experience)
             self.hindsight_subbuffer.clear_main_buffer()
 

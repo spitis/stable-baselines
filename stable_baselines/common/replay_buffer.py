@@ -1,6 +1,15 @@
 import numpy as np
 from collections import OrderedDict
-import pathos.multiprocessing as mp
+import multiprocessing as mp
+from stable_baselines.common.vec_env import CloudpickleWrapper
+
+def worker_init(compute_reward_fn_wrapper):
+  global process_trajectory
+  process_trajectory = compute_reward_fn_wrapper.var
+
+def worker_fn(trajectory):
+  global process_trajectory
+  return process_trajectory(trajectory)
 
 class RingBuffer(object):
   """This is a collections.deque in numpy, with pre-allocated memory"""
@@ -157,7 +166,7 @@ class ReplayBuffer(object):
     return len(next(iter(self.items.values())))
 
 class EpisodicBuffer(object):
-  def __init__(self, n_subbuffers, n_cpus=None):
+  def __init__(self, n_subbuffers, process_trajectory_fn, n_cpus=None):
     """
     A simple buffer for storing full length episodes (as a  list of lists).
 
@@ -168,7 +177,7 @@ class EpisodicBuffer(object):
     self._subbuffers = [[] for _ in range(n_subbuffers)]
     n_cpus = n_cpus or n_subbuffers
 
-    self.pool = mp.Pool(n_cpus)
+    self.pool = mp.Pool(n_cpus, initializer=worker_init, initargs=(CloudpickleWrapper(process_trajectory_fn),))
 
   def commit_subbuffer(self, i):
     """
@@ -186,11 +195,11 @@ class EpisodicBuffer(object):
   def __len__(self):
     return len(self._main_buffer)
 
-  def map(self, fn):
+  def process_trajectories(self):
     """
-    Map a function to the trajectories in the main buffer.
+    Processes trajectories
     """
-    return map(fn, self._main_buffer)
+    return self.pool.map(worker_fn, self._main_buffer)
 
   def clear_main_buffer(self):
     self._main_buffer = []
