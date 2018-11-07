@@ -434,6 +434,7 @@ class SimpleRLModel(BaseRLModel):
 
             logger.record_tabular("steps", self.task_step)
             logger.record_tabular("episodes", num_episodes)
+            logger.record_tabular("repl_buff_len", len(self.replay_buffer))
             logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
             if self.exploration:
               logger.record_tabular(

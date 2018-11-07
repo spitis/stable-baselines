@@ -18,10 +18,10 @@ def gridworld_cnn(scaled_images, **kwargs):
     :param kwargs: (dict) Extra keywords parameters for the convolutional layers of the CNN
     :return: (TensorFlow Tensor) The CNN output layer
     """
-  activ = tf.nn.tanh
-  layer_1 = tf.layers.conv2d(scaled_images, filters=64, kernel_size=5, padding='SAME', activation=activ)
-  f = conv_to_fc(layer_1)
-  return tf.layers.dense(layer_1, 256, activation=tf.nn.relu)
+  activ = tf.nn.relu
+  layer_1 = tf.layers.conv2d(scaled_images, filters=64, kernel_size=3, padding='SAME', activation=activ)
+  layer_1 = tf.layers.conv2d(scaled_images, filters=64, kernel_size=3, padding='SAME', activation=activ)
+  return conv_to_fc(layer_1)
 
 class GridWorldCnnPolicy(FeedForwardPolicy):
   """
@@ -51,7 +51,7 @@ def main(args):
     :param args: (ArgumentParser) the input arguments100000
     """
     grid_file = 'room_5x5_empty.txt'
-    env = GoalGridWorldEnv(grid_size=5, max_step=18, grid_file=grid_file)
+    env = GoalGridWorldEnv(grid_size=5, max_step=12, grid_file=grid_file)
     if args.model_type == "mlp":
         policy = GridWorldMlpPolicy
     elif args.model_type == "cnn":
@@ -66,10 +66,11 @@ def main(args):
         verbose=1,
         batch_size=128,
         buffer_size=100000,
-        exploration_fraction=0.8,
+        exploration_fraction=0.5,
         exploration_final_eps=0.02,
         target_network_update_frac=0.05,
         target_network_update_freq=20,
+        hindsight_mode=args.her,
     )
     assert model.goal_space is not None
     model.learn(total_timesteps=args.max_timesteps)
@@ -82,5 +83,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train DQN on goal Gridworld")
     parser.add_argument('--max-timesteps', default=100000, type=int, help="Maximum number of timesteps")
     parser.add_argument('--model-type', default='mlp', type=str, help="Model type: cnn, mlp (default)")
+    parser.add_argument('--her', default='none', type=str, help="HER type: final, future_k, none (default)")
     args = parser.parse_args()
     main(args)

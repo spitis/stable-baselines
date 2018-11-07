@@ -5,8 +5,8 @@ import trfl
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer
-
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future
+from itertools import chain
 
 class SimpleDQN(SimpleRLModel):
   """
@@ -37,11 +37,27 @@ class SimpleDQN(SimpleRLModel):
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
     """
 
-  def __init__(self, policy, env, gamma=0.99, learning_rate=5e-4, *, exploration_fraction=0.1,
-               exploration_final_eps=0.02, param_noise=False, buffer_size=50000, train_freq=1,
-               batch_size=32, learning_starts=1000, target_network_update_frac=1.,
-               target_network_update_freq=500, double_q=True, grad_norm_clipping=10., verbose=0,
-               tensorboard_log=None, _init_setup_model=True):
+  def __init__(self,
+               policy,
+               env,
+               gamma=0.99,
+               learning_rate=5e-4,
+               *,
+               exploration_fraction=0.1,
+               exploration_final_eps=0.02,
+               param_noise=False,
+               buffer_size=50000,
+               train_freq=1,
+               batch_size=32,
+               learning_starts=1000,
+               target_network_update_frac=1.,
+               target_network_update_freq=500,
+               hindsight_mode=None,
+               double_q=True,
+               grad_norm_clipping=10.,
+               verbose=0,
+               tensorboard_log=None,
+               _init_setup_model=True):
 
     super(SimpleDQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True)
 
@@ -62,6 +78,8 @@ class SimpleDQN(SimpleRLModel):
     self.target_network_update_frac = target_network_update_frac
     self.target_network_update_freq = target_network_update_freq
 
+    self.hindsight_mode = hindsight_mode
+
     self.double_q = double_q
     self.grad_norm_clipping = grad_norm_clipping
 
@@ -69,6 +87,8 @@ class SimpleDQN(SimpleRLModel):
 
     # Below props are set in self._setup_new_task()
     self.reset = None
+    self.hindsight_subbuffer = None
+    self.hindsight_fn = None
     self.global_step = 0
     self.task_step = 0
     self.replay_buffer = None
@@ -92,8 +112,15 @@ class SimpleDQN(SimpleRLModel):
         with tf.variable_scope("deepq"):
 
           # policy function
-          policy = self.policy(self.sess, self.observation_space, self.action_space, n_env=self.n_envs,
-                               n_steps=1, n_batch=None, is_DQN=True, goal_space=self.goal_space)
+          policy = self.policy(
+              self.sess,
+              self.observation_space,
+              self.action_space,
+              n_env=self.n_envs,
+              n_steps=1,
+              n_batch=None,
+              is_DQN=True,
+              goal_space=self.goal_space)
 
           # exploration placeholders & online action with exploration noise
           epsilon_ph = tf.placeholder_with_default(0., shape=(), name="epsilon_ph")
@@ -107,17 +134,31 @@ class SimpleDQN(SimpleRLModel):
 
           # create target q network for training
           with tf.variable_scope("target_q_func", reuse=False):
-            target_policy = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
-                                        None, reuse=False, is_DQN=True, goal_space=self.goal_space)
+            target_policy = self.policy(
+                self.sess,
+                self.observation_space,
+                self.action_space,
+                self.n_envs,
+                1,
+                None,
+                reuse=False,
+                is_DQN=True,
+                goal_space=self.goal_space)
 
           # setup double q network; because of the outer_scope_getter, this reuses policy variables
-          with tf.variable_scope("double_q", reuse=True,
-                                 custom_getter=tf_util.outer_scope_getter("double_q")):
-            double_policy = self.policy(self.sess, self.observation_space, self.action_space, self.n_envs, 1,
-                                        None, reuse=True, obs_phs=(target_policy.obs_ph,
-                                                                   target_policy.processed_x),
-                                        is_DQN=True, goal_space=self.goal_space, goal_phs=(target_policy.goal_ph,
-                                                                                           target_policy.processed_g))
+          with tf.variable_scope("double_q", reuse=True, custom_getter=tf_util.outer_scope_getter("double_q")):
+            double_policy = self.policy(
+                self.sess,
+                self.observation_space,
+                self.action_space,
+                self.n_envs,
+                1,
+                None,
+                reuse=True,
+                obs_phs=(target_policy.obs_ph, target_policy.processed_x),
+                is_DQN=True,
+                goal_space=self.goal_space,
+                goal_phs=(target_policy.goal_ph, target_policy.processed_g))
 
         with tf.variable_scope("loss"):
 
@@ -135,12 +176,10 @@ class SimpleDQN(SimpleRLModel):
 
           # target q values based on 1-step bellman
           if self.double_q:
-            l2_loss, loss_info = trfl.double_qlearning(policy.q_values, a_tm1, r_t, pcont_t,
-                                                       target_policy.q_values,
+            l2_loss, loss_info = trfl.double_qlearning(policy.q_values, a_tm1, r_t, pcont_t, target_policy.q_values,
                                                        double_policy.q_values)
           else:
-            l2_loss, loss_info = trfl.qlearning(policy.q_values, a_tm1, r_t, pcont_t,
-                                                target_policy.q_values)
+            l2_loss, loss_info = trfl.qlearning(policy.q_values, a_tm1, r_t, pcont_t, target_policy.q_values)
 
           tf_util.NOT_USED(l2_loss)  # because using huber loss (next line)
 
@@ -211,18 +250,26 @@ class SimpleDQN(SimpleRLModel):
     self.task_step = 0
     self.reset = np.ones([self.n_envs, 1])
 
-    items = [("observations0", self.observation_space.shape), ("actions", self.action_space.shape),
-             ("rewards", (1,)), ("observations1", self.observation_space.shape), ("terminals1",
-                                                                                  (1,))]
+    items = [("observations0", self.observation_space.shape), ("actions", self.action_space.shape), ("rewards", (1, )),
+             ("observations1", self.observation_space.shape), ("terminals1", (1, ))]
     if self.goal_space is not None:
-      items += [("achieved_goal", self.env.observation_space.spaces['achieved_goal'].shape),
-                ("desired_goal", self.env.observation_space.spaces['desired_goal'].shape)]
+      items += [("desired_goal", self.env.observation_space.spaces['desired_goal'].shape)]
 
     self.replay_buffer = ReplayBuffer(self.buffer_size, items)
+    self.hindsight_subbuffer = EpisodicBuffer(self.n_envs)
+
+    if self.hindsight_mode == 'final':
+      self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
+    elif 'future' in self.hindsight_mode:
+      _, k = self.hindsight_mode.split('_')
+      self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+    else:
+      self.hindsight_fn = None
 
     # Create the schedule for exploration starting from 1.
     self.exploration = LinearSchedule(
-        schedule_timesteps=int(self.exploration_fraction * total_timesteps), initial_p=1.0,
+        schedule_timesteps=int(self.exploration_fraction * total_timesteps),
+        initial_p=1.0,
         final_p=self.exploration_final_eps)
 
   def _get_action_for_single_obs(self, obs):
@@ -236,7 +283,7 @@ class SimpleDQN(SimpleRLModel):
       }
     else:
       feed_dict = {
-          self.model.obs_ph: np.array(obs), 
+          self.model.obs_ph: np.array(obs),
           self.epsilon_ph: self.exploration.value(self.task_step),
           self.reset_ph: self.reset
       }
@@ -246,21 +293,33 @@ class SimpleDQN(SimpleRLModel):
   def _process_experience(self, obs, action, rew, new_obs, done):
     """Called during training loop after action is taken; includes learning;
         returns a summary"""
-    done = np.expand_dims(done.astype(np.float32),1)
+    expanded_done = np.expand_dims(done.astype(np.float32), 1)
     rew = np.expand_dims(rew, 1)
-    
+
     goal_agent = self.goal_space is not None
 
     # Reset the episode if done
-    self.reset = done
+    self.reset = expanded_done
 
-    # Store transition in the replay buffer.
+    # Store transition in the replay buffer, and hindsight subbuffer
     if goal_agent:
-      self.replay_buffer.add_batch(obs['observation'], action, rew, new_obs['observation'], \
-                          done, new_obs['achieved_goal'], new_obs['desired_goal'])
+      self.replay_buffer.add_batch(obs['observation'], action, rew, new_obs['observation'], expanded_done, new_obs['desired_goal'])
     else:
-      self.replay_buffer.add_batch(obs, action, rew, new_obs, done)
-    
+      self.replay_buffer.add_batch(obs, action, rew, new_obs, expanded_done)
+
+    if self.hindsight_fn is not None:
+      for idx in range(self.n_envs):
+        # add the transition to the HER subbuffer for that worker
+        self.hindsight_subbuffer.add_to_subbuffer(
+            idx, [obs['observation'][idx], action[idx], rew[idx], new_obs['observation'][idx], new_obs['achieved_goal'][idx], new_obs['desired_goal'][idx]])
+        if done[idx]:
+          # commit the subbuffer
+          self.hindsight_subbuffer.commit_subbuffer(idx)
+          if len(self.hindsight_subbuffer) == self.n_envs:
+            for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.map(self.hindsight_fn)):
+              self.replay_buffer.add(*hindsight_experience)
+            self.hindsight_subbuffer.clear_main_buffer()
+
     summaries = []
     self.global_step += self.n_envs
     for _ in range(self.n_envs):
@@ -269,7 +328,7 @@ class SimpleDQN(SimpleRLModel):
       if self.task_step > self.learning_starts:
         if self.task_step % self.train_freq == 0:
           if goal_agent:
-            obses_t, actions, rewards, obses_tp1, dones, achieved_g, desired_g =\
+            obses_t, actions, rewards, obses_tp1, dones, desired_g =\
                                                           self.replay_buffer.sample(self.batch_size)
           else:
             obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
@@ -286,7 +345,7 @@ class SimpleDQN(SimpleRLModel):
           }
           if goal_agent:
             feed_dict[self._goal_ph] = desired_g
-            feed_dict[self._goal2_ph] = desired_g # Assuming that the goal does not change in episode
+            feed_dict[self._goal2_ph] = desired_g  # Assuming that the goal does not change in episode
 
           _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
           summaries.append(summary)
@@ -300,23 +359,25 @@ class SimpleDQN(SimpleRLModel):
     goal_agent = self.goal_space is not None
 
     if not goal_agent:
-        observation = np.array(observation)
+      observation = np.array(observation)
     else:
-        desired_goal = np.array(observation['desired_goal'])
-        desired_goal = desired_goal.reshape((-1,) + self.goal_space.shape)
-        observation = np.array(observation['observation'])
+      desired_goal = np.array(observation['desired_goal'])
+      desired_goal = desired_goal.reshape((-1, ) + self.goal_space.shape)
+      observation = np.array(observation['observation'])
 
     vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
-    observation = observation.reshape((-1,) + self.observation_space.shape)
+    observation = observation.reshape((-1, ) + self.observation_space.shape)
 
     if goal_agent:
-        actions = self.sess.run(self.target_model.deterministic_action, {self._obs2_ph: observation,
-                                                                  self._goal2_ph: desired_goal})
+      actions = self.sess.run(self.target_model.deterministic_action, {
+          self._obs2_ph: observation,
+          self._goal2_ph: desired_goal
+      })
     else:
-        actions = self.sess.run(self.target_model.deterministic_action, {self._obs2_ph: observation})
+      actions = self.sess.run(self.target_model.deterministic_action, {self._obs2_ph: observation})
 
     if not vectorized_env:
-        actions = actions[0]
+      actions = actions[0]
 
     return actions, None
 
@@ -335,6 +396,7 @@ class SimpleDQN(SimpleRLModel):
         "buffer_size": self.buffer_size,
         "target_network_update_frac": self.target_network_update_frac,
         "target_network_update_freq": self.target_network_update_freq,
+        'hindsight_mode': self.hindsight_mode,
         "double_q": self.double_q,
         "grad_norm_clipping": self.grad_norm_clipping,
         "tensorboard_log": self.tensorboard_log,
@@ -358,10 +420,8 @@ def epsilon_greedy_wrapper(policy, epsilon_placeholder):
     """
   deterministic_actions = tf.argmax(policy.q_values, axis=1)
   batch_size = tf.shape(policy.obs_ph)[0]
-  random_actions = tf.random_uniform(
-      tf.stack([batch_size]), minval=0, maxval=policy.ac_space.n, dtype=tf.int64)
-  chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1,
-                                   dtype=tf.float32) < epsilon_placeholder
+  random_actions = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=policy.ac_space.n, dtype=tf.int64)
+  chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < epsilon_placeholder
   return tf.where(chose_random, random_actions, deterministic_actions)
 
 

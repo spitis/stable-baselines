@@ -1,6 +1,6 @@
 import numpy as np
 from collections import OrderedDict
-
+import pathos.multiprocessing as mp
 
 class RingBuffer(object):
   """This is a collections.deque in numpy, with pre-allocated memory"""
@@ -148,7 +148,82 @@ class ReplayBuffer(object):
     for buf, batched_values in zip(self.items.values(), items):
       buf.append_batch(batched_values)
 
+  def __len__(self):
+    return self.size
+
   @property
   def size(self):
     # Get the size of the RingBuffer on the first item type
     return len(next(iter(self.items.values())))
+
+class EpisodicBuffer(object):
+  def __init__(self, n_subbuffers, n_cpus=None):
+    """
+    A simple buffer for storing full length episodes (as a  list of lists).
+
+    :param n_subbuffers: (int) the number of subbuffers to use
+    """
+    self._main_buffer = []
+    self.n_subbuffers = n_subbuffers
+    self._subbuffers = [[] for _ in range(n_subbuffers)]
+    n_cpus = n_cpus or n_subbuffers
+
+    self.pool = mp.Pool(n_cpus)
+
+  def commit_subbuffer(self, i):
+    """
+    Adds the i-th subbuffer to the main_buffer, then clears it. 
+    """
+    self._main_buffer.append(self._subbuffers[i])
+    self._subbuffers[i] = []
+
+  def add_to_subbuffer(self, i, item):
+    """
+    Adds item to i-th subbuffer.
+    """
+    self._subbuffers[i].append(item)
+
+  def __len__(self):
+    return len(self._main_buffer)
+
+  def map(self, fn):
+    """
+    Map a function to the trajectories in the main buffer.
+    """
+    return map(fn, self._main_buffer)
+
+  def clear_main_buffer(self):
+    self._main_buffer = []
+
+  def clear_all(self):
+    self._main_buffer = []
+    self._subbuffers = [[] for _ in range(self.n_subbuffers)]
+
+  def close(self):
+    self.pool.close()
+
+
+def her_final(trajectory, compute_reward):
+  """produces hindsight experiences where desired_goal is replaced with final achieved_goal"""
+  final_achieved_goal = trajectory[-1][4]
+  if np.allclose(final_achieved_goal, trajectory[-1][5]):
+    return [] # don't add successful trajectories twice
+  hindsight_trajectory = []
+  for o1, action, reward, o2, achieved_goal, desired_goal in trajectory:
+    hindsight_trajectory.append([o1, action, compute_reward(achieved_goal, final_achieved_goal, None), o2, 0., final_achieved_goal])
+  hindsight_trajectory[-1][4] = [1.] #set final done = 1
+  return hindsight_trajectory
+
+def her_future(trajectory, k, compute_reward):
+  """produces hindsight experiences where desired_goal is replaced with future achieved_goals"""
+  achieved_goals = np.array([transition[4] for transition in trajectory])
+  len_ag = len(achieved_goals)
+  achieved_goals_range = np.array(range(len_ag))
+  hindsight_experiences = []
+  for i, (o1, action, _, o2, achieved_goal, _) in enumerate(trajectory):
+    sampled_goals = np.random.choice(achieved_goals_range[i:], min(k, len_ag - i), replace=False)
+    sampled_goals = achieved_goals[sampled_goals]
+    for g in sampled_goals:
+      reward = compute_reward(achieved_goal, g, None)
+      hindsight_experiences.append([o1, action, reward, o2, reward, g])
+  return hindsight_experiences
