@@ -41,20 +41,6 @@ class GoalGridWorldEnv(gym.GoalEnv):
         # Object types
         self.objects = GoalGridWorldEnv.ObjectTypes
 
-        # Observations are dictionaries containing an
-        # grid observation, achieved and desired goals
-        observation_space = spaces.Box(
-            low=0,
-            high=1,
-            shape=(grid_size, grid_size, len(self.objects)),
-            dtype='uint8'
-        )
-        self.observation_space = spaces.Dict({
-            'observation': observation_space,
-            'desired_goal': self.observation_space,
-            'achieved_goal': self.observation_space
-        })
-
         # Environment configuration
         self.grid_size = grid_size
         self.max_step = max_step
@@ -80,6 +66,20 @@ class GoalGridWorldEnv(gym.GoalEnv):
             self.goal_loc = self._sample_goal_loc()
             self.goal = np.copy(self.grid)
             self.goal[self.goal_loc[0], self.goal_loc[1]] = self.objects.agent
+
+        # Observations are dictionaries containing an
+        # grid observation, achieved and desired goals
+        observation_space = spaces.Box(
+            low=0,
+            high=1,
+            shape=(self.grid_size, self.grid_size, len(self.objects)),
+            dtype='uint8'
+        )
+        self.observation_space = spaces.Dict({
+            'observation': observation_space,
+            'desired_goal': observation_space,
+            'achieved_goal': observation_space
+        })
 
         self.num_step = 0
 
