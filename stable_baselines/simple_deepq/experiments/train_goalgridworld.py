@@ -1,3 +1,11 @@
+"""
+train_goalgridworld.py
+
+Example usage:
+
+python train_goalgridworld.py --model-type cnn --max-timestep 5000 --her future_4 --room-file room_5x5_empty
+
+"""
 import argparse
 
 import numpy as np
@@ -50,7 +58,7 @@ def main(args):
 
     :param args: (ArgumentParser) the input arguments100000
     """
-    grid_file = 'room_5x5_empty.txt'
+    grid_file = "{}.txt".format(args.room_file)
     env = GoalGridWorldEnv(grid_size=5, max_step=12, grid_file=grid_file)
     if args.model_type == "mlp":
         policy = GridWorldMlpPolicy
@@ -71,12 +79,16 @@ def main(args):
         target_network_update_frac=0.05,
         target_network_update_freq=20,
         hindsight_mode=args.her,
+        tensorboard_log="./dqn_goalgridworld_tensorboard/{}".format(args.room_file),
     )
     assert model.goal_space is not None
-    model.learn(total_timesteps=args.max_timesteps)
+    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DQN_{}".format(args.her))
 
-    print("Saving model to goalgridworld_model_{}_{}.pkl".format(args.model_type, args.max_timesteps))
-    model.save("goalgridworld_model_{}_{}.pkl".format(args.model_type, args.max_timesteps))
+    model_filename = "goalgridworld_model_{}_{}_{}.pkl".format(args.model_type, args.max_timesteps, args.room_file)
+    print("Saving model to {}".format(model_filename))
+    model.save(model_filename)
+
+
 
 
 if __name__ == '__main__':
@@ -84,5 +96,7 @@ if __name__ == '__main__':
     parser.add_argument('--max-timesteps', default=100000, type=int, help="Maximum number of timesteps")
     parser.add_argument('--model-type', default='mlp', type=str, help="Model type: cnn, mlp (default)")
     parser.add_argument('--her', default='none', type=str, help="HER type: final, future_k, none (default)")
+    parser.add_argument('--room-file', default='room_5x5_empty', type=str,
+                        help="Room type: room_5x5_empty (default), 2_room_9x9")
     args = parser.parse_args()
     main(args)
