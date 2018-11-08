@@ -5,9 +5,10 @@ import trfl
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future
 from stable_baselines.simple_ddpg.noise import NormalActionNoise, OrnsteinUhlenbeckActionNoise
 from stable_baselines.common.policies import get_policy_from_name
+from itertools import chain
 
 
 class SimpleDDPG(SimpleRLModel):
@@ -40,14 +41,32 @@ class SimpleDDPG(SimpleRLModel):
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
     """
 
-  def __init__(self, policy, env, gamma=0.99, actor_lr=1e-4, critic_lr=1e-3, *,
-               critic_policy=None, joint_feature_extractor=None, rescale_input=True,
-               action_noise=None, param_noise=False, buffer_size=50000, train_freq=1, batch_size=32,
-               learning_starts=1000, target_network_update_frac=0.001, target_network_update_freq=1,
-               verbose=0, tensorboard_log=None, grad_norm_clipping=10., _init_setup_model=True):
+  def __init__(self,
+               policy,
+               env,
+               gamma=0.99,
+               actor_lr=1e-4,
+               critic_lr=1e-3,
+               *,
+               critic_policy=None,
+               joint_feature_extractor=None,
+               rescale_input=True,
+               action_noise=None,
+               param_noise=False,
+               buffer_size=50000,
+               train_freq=1,
+               batch_size=32,
+               learning_starts=1000,
+               target_network_update_frac=0.001,
+               target_network_update_freq=1,
+               hindsight_mode=None,
+               grad_norm_clipping=10.,
+               verbose=0,
+               tensorboard_log=None,
+               _init_setup_model=True):
 
-    super(SimpleDDPG, self).__init__(policy=policy, env=env, verbose=verbose,
-                                     requires_vec_env=True)
+    super(SimpleDDPG, self).__init__(
+        policy=policy, env=env, verbose=verbose, requires_vec_env=True)
 
     self.gamma = gamma
     self.actor_lr = actor_lr
@@ -56,11 +75,11 @@ class SimpleDDPG(SimpleRLModel):
     self.actor_policy = self.policy
     self.critic_policy = self.policy if critic_policy is None else critic_policy
     if isinstance(self.critic_policy, str):
-        self.critic_policy = get_policy_from_name(self.critic_policy)
+      self.critic_policy = get_policy_from_name(self.critic_policy)
 
     self.joint_feature_extractor = joint_feature_extractor or identity_extractor
     self.rescale_input = rescale_input
-    
+
     self.action_noise = action_noise
     if self.action_space is not None and action_noise is None:
       self.action_noise = OrnsteinUhlenbeckActionNoise(
@@ -79,12 +98,16 @@ class SimpleDDPG(SimpleRLModel):
     self.target_network_update_frac = target_network_update_frac
     self.target_network_update_freq = target_network_update_freq
 
+    self.hindsight_mode = hindsight_mode
+
     self.grad_norm_clipping = grad_norm_clipping
 
     self.tensorboard_log = tensorboard_log
 
     # Below props are set in self._setup_new_task()
     self.reset = None
+    self.hindsight_subbuffer = None
+    self.hindsight_fn = None
     self.global_step = 0
     self.task_step = 0
     self.replay_buffer = None
@@ -109,28 +132,51 @@ class SimpleDDPG(SimpleRLModel):
           # main network
           with tf.variable_scope('main_network', reuse=False):
             obs_ph = tf.placeholder(
-                shape=(None,) + ob_space.shape, dtype=ob_space.dtype, name='obs_ph')
-            processed_x = rescale_obs_ph(tf.to_float(obs_ph), ob_space, self.rescale_input)
-            main_input, main_joint_tvars = self.joint_feature_extractor(processed_x)
+                shape=(None,) + ob_space.shape,
+                dtype=ob_space.dtype,
+                name='obs_ph')
+            processed_x = rescale_obs_ph(
+                tf.to_float(obs_ph), ob_space, self.rescale_input)
+            main_input, main_joint_tvars = self.joint_feature_extractor(
+                processed_x)
 
             action_ph = tf.placeholder(
-                shape=(None,) + self.action_space.shape, dtype=self.action_space.dtype,
+                shape=(None,) + self.action_space.shape,
+                dtype=self.action_space.dtype,
                 name='action_ph')
 
             with tf.variable_scope('actor', reuse=False):
-              actor_branch = self.actor_policy(self.sess, ob_space, self.action_space, n_env=1,
-                                              n_steps=1, n_batch=None, obs_phs=(obs_ph, main_input),
-                                              goal_space=self.goal_space)
+              actor_branch = self.actor_policy(
+                  self.sess,
+                  ob_space,
+                  self.action_space,
+                  n_env=1,
+                  n_steps=1,
+                  n_batch=None,
+                  obs_phs=(obs_ph, main_input),
+                  goal_space=self.goal_space)
             with tf.variable_scope('critic', reuse=False):
               critic_branch = self.critic_policy(
-                  self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None,
-                  obs_phs=(obs_ph,
-                          main_input), goal_space=self.goal_space, action_ph=action_ph)
+                  self.sess,
+                  ob_space,
+                  self.action_space,
+                  n_env=1,
+                  n_steps=1,
+                  n_batch=None,
+                  obs_phs=(obs_ph, main_input),
+                  goal_space=self.goal_space,
+                  action_ph=action_ph)
             with tf.variable_scope('critic', reuse=True):
               max_critic_branch = self.critic_policy(
-                  self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None,
-                  obs_phs=(obs_ph,
-                          main_input), goal_space=self.goal_space, action_ph=actor_branch.policy)
+                  self.sess,
+                  ob_space,
+                  self.action_space,
+                  n_env=1,
+                  n_steps=1,
+                  n_batch=None,
+                  obs_phs=(obs_ph, main_input),
+                  goal_space=self.goal_space,
+                  action_ph=actor_branch.policy)
 
             if not self.param_noise:
               act = actor_branch.policy + self.action_noise()
@@ -140,18 +186,34 @@ class SimpleDDPG(SimpleRLModel):
           # target network
           with tf.variable_scope('target_network', reuse=False):
             target_obs_ph = tf.placeholder(
-                shape=(None,) + ob_space.shape, dtype=ob_space.dtype, name='target_obs_ph')
-            processed_x = rescale_obs_ph(tf.to_float(target_obs_ph), ob_space, self.rescale_input)
-            target_input, target_joint_tvars = self.joint_feature_extractor(processed_x)
+                shape=(None,) + ob_space.shape,
+                dtype=ob_space.dtype,
+                name='target_obs_ph')
+            processed_x = rescale_obs_ph(
+                tf.to_float(target_obs_ph), ob_space, self.rescale_input)
+            target_input, target_joint_tvars = self.joint_feature_extractor(
+                processed_x)
 
             with tf.variable_scope('actor', reuse=False):
               target_actor_branch = self.actor_policy(
-                  self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None,
-                  obs_phs=(target_obs_ph, target_input), goal_space=self.goal_space)
+                  self.sess,
+                  ob_space,
+                  self.action_space,
+                  n_env=1,
+                  n_steps=1,
+                  n_batch=None,
+                  obs_phs=(target_obs_ph, target_input),
+                  goal_space=self.goal_space)
             with tf.variable_scope('critic', reuse=False):
               target_critic_branch = self.critic_policy(
-                  self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None,
-                  obs_phs=(target_obs_ph, target_input), goal_space=self.goal_space,
+                  self.sess,
+                  ob_space,
+                  self.action_space,
+                  n_env=1,
+                  n_steps=1,
+                  n_batch=None,
+                  obs_phs=(target_obs_ph, target_input),
+                  goal_space=self.goal_space,
                   action_ph=target_actor_branch.policy)
 
         # variables for main and target networks
@@ -175,12 +237,16 @@ class SimpleDDPG(SimpleRLModel):
           pcont_t *= (1 - done_mask_ph) * pcont_t
 
           # target q values based on 1-step bellman (no double q for ddpg)
-          l2_loss, loss_info = trfl.td_learning(tf.squeeze(critic_branch.value_fn, 1), r_t, pcont_t,
-                                        tf.squeeze(target_critic_branch.value_fn, 1))
-          tf_util.NOT_USED(loss_info)  # loss_info is named_tuple with target values and td_error
+          l2_loss, loss_info = trfl.td_learning(
+              tf.squeeze(critic_branch.value_fn, 1), r_t, pcont_t,
+              tf.squeeze(target_critic_branch.value_fn, 1))
+          tf_util.NOT_USED(
+              loss_info
+          )  # loss_info is named_tuple with target values and td_error
           mean_critic_loss = tf.reduce_mean(l2_loss)
 
-          tf.summary.scalar("critic_td_error", tf.reduce_mean(loss_info.td_error))
+          tf.summary.scalar("critic_td_error",
+                            tf.reduce_mean(loss_info.td_error))
           tf.summary.histogram("critic_td_error", loss_info.td_error)
           tf.summary.scalar("critic_loss", mean_critic_loss)
 
@@ -189,7 +255,8 @@ class SimpleDDPG(SimpleRLModel):
           a_max = actor_branch.policy
           q_max = tf.squeeze(max_critic_branch.value_fn, 1)
 
-          l2_loss, loss_info = trfl.dpg(q_max, a_max, dqda_clipping=self.grad_norm_clipping)
+          l2_loss, loss_info = trfl.dpg(
+              q_max, a_max, dqda_clipping=self.grad_norm_clipping)
           tf_util.NOT_USED(loss_info)
           mean_actor_loss = tf.reduce_mean(l2_loss)
 
@@ -206,14 +273,16 @@ class SimpleDDPG(SimpleRLModel):
           if self.grad_norm_clipping is not None:
             for i, (grad, var) in enumerate(gradients):
               if grad is not None:
-                gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping), var)
+                gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping),
+                                var)
 
           training_step = optimizer.apply_gradients(gradients)
 
         with tf.name_scope('update_target_network_ops'):
           update_target_network = []
           for var, var_target in zip(
-              sorted(main_vars, key=lambda v: v.name), sorted(target_vars, key=lambda v: v.name)):
+              sorted(main_vars, key=lambda v: v.name),
+              sorted(target_vars, key=lambda v: v.name)):
             new_target = self.target_network_update_frac       * var +\
                         (1 - self.target_network_update_frac) * var_target
             update_target_network.append(var_target.assign(new_target))
@@ -254,14 +323,26 @@ class SimpleDDPG(SimpleRLModel):
     self.task_step = 0
     self.reset = np.ones([self.n_envs, 1])
 
-    items = [("observations0", self.observation_space.shape), ("actions", self.action_space.shape),
-             ("rewards", (1,)), ("observations1", self.observation_space.shape), ("terminals1",
-                                                                                  (1,))]
+    items = [("observations0", self.observation_space.shape),
+             ("actions", self.action_space.shape), ("rewards", (1,)),
+             ("observations1", self.observation_space.shape), ("terminals1",
+                                                               (1,))]
     if self.goal_space is not None:
-      items += [("achieved_goal", self.env.observation_space.spaces['achieved_goal'].shape),
-                ("desired_goal", self.env.observation_space.spaces['desired_goal'].shape)]
+      items += [("desired_goal",
+                 self.env.observation_space.spaces['desired_goal'].shape)]
 
     self.replay_buffer = ReplayBuffer(self.buffer_size, items)
+
+    if self.hindsight_mode == 'final':
+      self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
+    elif 'future' in self.hindsight_mode:
+      _, k = self.hindsight_mode.split('_')
+      self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+    else:
+      self.hindsight_fn = None
+
+    
+    self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn)
 
   def _get_action_for_single_obs(self, obs):
     """Called during training loop to get online action (with exploration)"""
@@ -272,7 +353,7 @@ class SimpleDDPG(SimpleRLModel):
       }
     else:
       feed_dict = {
-          self.model.obs_ph: np.array(obs), 
+          self.model.obs_ph: np.array(obs),
       }
 
     return self.sess.run(self._act, feed_dict=feed_dict)
@@ -280,31 +361,42 @@ class SimpleDDPG(SimpleRLModel):
   def _process_experience(self, obs, action, rew, new_obs, done):
     """Called during training loop after action is taken; includes learning;
               returns a summary"""
-    
-    done = np.expand_dims(done.astype(np.float32),1)
+    expanded_done = np.expand_dims(done.astype(np.float32), 1)
     rew = np.expand_dims(rew, 1)
 
     goal_agent = self.goal_space is not None
 
     # Reset the episode if done
-    self.reset = done
+    self.reset = expanded_done
 
-    # Store transition in the replay buffer.
+    # Store transition in the replay buffer, and hindsight subbuffer
     if goal_agent:
-      self.replay_buffer.add_batch(obs['observation'], action, rew, new_obs['observation'], \
-                          done, new_obs['achieved_goal'], new_obs['desired_goal'])
+      self.replay_buffer.add_batch(obs['observation'], action, rew, new_obs['observation'], expanded_done, new_obs['desired_goal'])
     else:
-      self.replay_buffer.add_batch(obs, action, rew, new_obs, done)
+      self.replay_buffer.add_batch(obs, action, rew, new_obs, expanded_done)
+
+    if self.hindsight_fn is not None:
+      for idx in range(self.n_envs):
+        # add the transition to the HER subbuffer for that worker
+        self.hindsight_subbuffer.add_to_subbuffer(
+            idx, [obs['observation'][idx], action[idx], rew[idx], new_obs['observation'][idx], new_obs['achieved_goal'][idx], new_obs['desired_goal'][idx]])
+        if done[idx]:
+          # commit the subbuffer
+          self.hindsight_subbuffer.commit_subbuffer(idx)
+          if len(self.hindsight_subbuffer) == self.n_envs:
+            for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.process_trajectories()):
+              self.replay_buffer.add(*hindsight_experience)
+            self.hindsight_subbuffer.clear_main_buffer()
 
     summaries = []
     self.global_step += self.n_envs
-    for i in range(self.n_envs):
+    for _ in range(self.n_envs):
       self.task_step += 1
       # If have enough data, train on it.
       if self.task_step > self.learning_starts:
         if self.task_step % self.train_freq == 0:
           if goal_agent:
-            obses_t, actions, rewards, obses_tp1, dones, achieved_g, desired_g =\
+            obses_t, actions, rewards, obses_tp1, dones, desired_g =\
                                                           self.replay_buffer.sample(self.batch_size)
           else:
             obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
@@ -317,7 +409,7 @@ class SimpleDDPG(SimpleRLModel):
               self._action_ph: actions,
               self._reward_ph: rewards,
               self._obs2_ph: obses_tp1,
-              self._dones_ph: dones
+              self._dones_ph: dones,
           }
           if goal_agent:
             feed_dict[self._goal_ph]: desired_g
@@ -330,15 +422,22 @@ class SimpleDDPG(SimpleRLModel):
 
     return summaries
 
-  def predict(self, observation, state=None, mask=None, deterministic=True, goal=None):
+  def predict(self,
+              observation,
+              state=None,
+              mask=None,
+              deterministic=True,
+              goal=None):
     observation = np.array(observation)
-    vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
+    vectorized_env = self._is_vectorized_observation(observation,
+                                                     self.observation_space)
 
     observation = observation.reshape((-1,) + self.observation_space.shape)
-    actions = self.sess.run(self.target_model.policy, {self._obs2_ph: observation})
+    actions = self.sess.run(self.target_model.policy,
+                            {self._obs2_ph: observation})
 
     if not vectorized_env:
-        actions = actions[0]
+      actions = actions[0]
 
     return actions, None
 
@@ -375,13 +474,16 @@ class SimpleDDPG(SimpleRLModel):
 
     self._save_to_file(save_path, data=data, params=params)
 
+
 def identity_extractor(input):
   trainable_variables = []
   return input, trainable_variables
 
+
 def rescale_obs_ph(obs_ph, ob_space, rescale_input):
   if (rescale_input and not np.any(np.isinf(ob_space.low)) and
-      not np.any(np.isinf(ob_space.high)) and np.any((ob_space.high - ob_space.low) != 0)):
+      not np.any(np.isinf(ob_space.high)) and
+      np.any((ob_space.high - ob_space.low) != 0)):
     # equivalent to processed_x / 255.0 when bounds are set to [0, 255]
     processed_x = ((obs_ph - ob_space.low) / (ob_space.high - ob_space.low))
     return processed_x

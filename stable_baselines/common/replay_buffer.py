@@ -219,8 +219,10 @@ def her_final(trajectory, compute_reward):
     return [] # don't add successful trajectories twice
   hindsight_trajectory = []
   for o1, action, reward, o2, achieved_goal, desired_goal in trajectory:
-    hindsight_trajectory.append([o1, action, compute_reward(achieved_goal, final_achieved_goal, None), o2, 0., final_achieved_goal])
-  hindsight_trajectory[-1][4] = [1.] #set final done = 1
+    new_reward = compute_reward(achieved_goal, final_achieved_goal, None)
+    hindsight_trajectory.append([o1, action, new_reward, o2, new_reward, final_achieved_goal])
+    if np.allclose(new_reward, 1.0):
+      break
   return hindsight_trajectory
 
 def her_future(trajectory, k, compute_reward):
