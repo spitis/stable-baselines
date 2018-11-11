@@ -318,19 +318,19 @@ class TRPO(BaseRLModel):
 
                         with self.timed("computegrad"):
                             steps = timesteps_so_far + (k + 1) * (seg["total_timestep"] / self.g_step)
-                            run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-                            run_metadata = tf.RunMetadata()
+                            #run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+                            #run_metadata = tf.RunMetadata()
                             # run loss backprop with summary, and save the metadata (memory, compute time, ...)
                             if writer is not None:
-                                summary, grad, *lossbefore = self.compute_lossandgrad(*args, tdlamret, sess=self.sess,
-                                                                                      options=run_options,
-                                                                                      run_metadata=run_metadata)
-                                writer.add_run_metadata(run_metadata, 'step%d' % steps)
+                                summary, grad, *lossbefore = self.compute_lossandgrad(*args, tdlamret, sess=self.sess) #,
+                                                                                      #options=run_options,
+                                                                                      #run_metadata=run_metadata)
+                                #writer.add_run_metadata(run_metadata, 'step%d' % steps)
                                 writer.add_summary(summary, steps)
                             else:
-                                _, grad, *lossbefore = self.compute_lossandgrad(*args, tdlamret, sess=self.sess,
-                                                                                options=run_options,
-                                                                                run_metadata=run_metadata)
+                                _, grad, *lossbefore = self.compute_lossandgrad(*args, tdlamret, sess=self.sess) #,
+                                                                                #options=run_options,
+                                                                                #run_metadata=run_metadata)
 
                         lossbefore = self.allmean(np.array(lossbefore))
                         grad = self.allmean(grad)

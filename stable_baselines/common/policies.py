@@ -174,6 +174,9 @@ class BasePolicy(ABC):
       self.neglogp = self.proba_distribution.neglogp(self.action)
       if self.is_discrete:
         self.policy = tf.nn.softmax(self.policy)
+      elif isinstance(self.ac_space, Box):
+        print('conforming actions to action_space with highs {} and lows {}'.format(self.ac_space.high, self.ac_space.low))
+        self.policy = tf.nn.sigmoid(self.policy) * (self.ac_space.high - self.ac_space.low) + self.ac_space.low
       self._value = self.value_fn[:, 0]
 
   def step(self, obs, state=None, mask=None, deterministic=True, goal=None):

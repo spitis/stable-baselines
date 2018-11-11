@@ -415,8 +415,8 @@ class SimpleRLModel(BaseRLModel):
         if writer is not None:
           for summary in summaries:
             writer.add_summary(summary, self.global_step)
-            ep_rewards = np.array([rewards]).reshape((1, -1))
-            ep_dones = np.array([dones]).reshape((1, -1))
+            ep_rewards = np.expand_dims(rewards, 1)
+            ep_dones = np.expand_dims(dones, 1)
             tb_episode_rewards = total_episode_reward_logger(tb_episode_rewards, ep_rewards,
                                                         ep_dones, writer, step)
 

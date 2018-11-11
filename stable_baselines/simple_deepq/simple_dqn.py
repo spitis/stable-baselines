@@ -202,6 +202,7 @@ class SimpleDQN(SimpleRLModel):
           training_step = optimizer.apply_gradients(gradients)
 
         with tf.name_scope('update_target_network_ops'):
+          init_target_network = []
           update_target_network = []
           for var, var_target in zip(
               sorted(policy.trainable_vars, key=lambda v: v.name),
@@ -209,7 +210,9 @@ class SimpleDQN(SimpleRLModel):
             new_target = self.target_network_update_frac       * var +\
                          (1 - self.target_network_update_frac) * var_target
             update_target_network.append(var_target.assign(new_target))
+            init_target_network.append(var_target.assign(var))
           update_target_network = tf.group(*update_target_network)
+          init_target_network = tf.group(*init_target_network)
 
         with tf.variable_scope("input_info", reuse=False):
           tf.summary.scalar('rewards', tf.reduce_mean(r_t))
@@ -242,7 +245,7 @@ class SimpleDQN(SimpleRLModel):
 
         # Initialize the parameters and copy them to the target network.
         tf_util.initialize(self.sess)
-        self.sess.run(self.update_target_network)
+        self.sess.run(self.init_target_network)
 
         self.summary = tf.summary.merge_all()
 
@@ -260,7 +263,7 @@ class SimpleDQN(SimpleRLModel):
 
     if self.hindsight_mode == 'final':
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
-    elif 'future' in self.hindsight_mode:
+    elif isinstance(self.hindsight_mode, str) and 'future' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
       self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
     else:
