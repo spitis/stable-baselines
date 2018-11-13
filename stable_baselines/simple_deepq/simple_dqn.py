@@ -233,6 +233,7 @@ class SimpleDQN(SimpleRLModel):
         self._goal_ph = policy.goal_ph
         self._goal2_ph = target_policy.goal_ph
         self.update_target_network = update_target_network
+        self.init_target_network = init_target_network
         self.model = policy
         self.target_model = target_policy
 
