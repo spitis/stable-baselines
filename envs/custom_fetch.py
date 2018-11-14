@@ -62,7 +62,7 @@ class CustomFetchPushEnv(FetchPushEnv):
     obs = self._get_obs()
 
     reward = self.compute_reward(obs['achieved_goal'], self.goal, None)
-    done = 1. if ((self.num_step >= self.max_step) or (reward > 0.)) else 0.
+    done = 1. if self.num_step >= self.max_step else reward.astype(np.bool).astype(np.float32)
     info = None
 
     return obs, reward, done, info

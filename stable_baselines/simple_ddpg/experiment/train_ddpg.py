@@ -18,8 +18,9 @@ class SimpleMlpPolicy(FeedForwardPolicy):
   """
   def __init__(self, *args, **kwargs):
       super(SimpleMlpPolicy, self).__init__(*args, **kwargs,
-                                         layers=[256,256],
+                                         layers=[400,400],
                                          layer_norm=True,
+                                         activ=tf.nn.relu,
                                          feature_extraction="mlp")
 
 def main(args):
@@ -28,12 +29,12 @@ def main(args):
 
     :param args: (ArgumentParser) the input arguments100000
     """
-    if "FetchReach" in args.env:
-      env = SubprocVecEnv([CustomFetchReachEnv for _ in range(12)])
-    elif "FetchPush" in args.env:
-      env = SubprocVecEnv([CustomFetchPushEnv for _ in range(12)])
+    if "CustomFetchReach" in args.env:
+      env = SubprocVecEnv([CustomFetchReachEnv for _ in range(48)])
+    elif "CustomFetchPush" in args.env:
+      env = SubprocVecEnv([CustomFetchPushEnv for _ in range(48)])
     else:
-      env = SubprocVecEnv([lambda: gym.make(args.env) for _ in range(12)])
+      env = SubprocVecEnv([lambda: gym.make(args.env) for _ in range(48)])
 
     if not args.folder:
       args.folder = '/tmp'
@@ -44,19 +45,20 @@ def main(args):
         gamma=0.98,
         actor_lr=1e-3,
         critic_lr=1e-3,
-        learning_starts=2500,
-        joint_feature_extractor=make_feedforward_extractor([64]),
-        joint_goal_feature_extractor=make_feedforward_extractor([64], scope='goal_feats'),
-        clip_value_fn_range=(0., 1.),
-        train_freq=20,
-        target_network_update_frac=0.05,
-        target_network_update_freq=100,
-        epsilon_random_exploration=0.1,
+        learning_starts=1000,
+        joint_feature_extractor=None,
+        joint_goal_feature_extractor=None,
+        clip_value_fn_range=(0.,1.),
+        train_freq=10,
+        target_network_update_frac=0.02,
+        target_network_update_freq=50,
+        epsilon_random_exploration=0.2,
+        action_noise='normal_0.2',
         critic_l2_regularization=0.,
-        action_l2_regularization=1e-2,
+        action_l2_regularization=5e-3,
         verbose=1,
-        batch_size=256,
-        buffer_size=1000000,
+        batch_size=512,
+        buffer_size=2000000,
         hindsight_mode=args.her,
         tensorboard_log="{}/ddpg_tensorboard/".format(args.folder),
     )

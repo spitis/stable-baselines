@@ -1,11 +1,11 @@
-import numpy as np
-from collections import OrderedDict
+import numpy as np, random
+from collections import OrderedDict, deque
 import multiprocessing as mp
 from stable_baselines.common.vec_env import CloudpickleWrapper
 
-def worker_init(compute_reward_fn_wrapper):
+def worker_init(process_trajectory_fn_wrapper):
   global process_trajectory
-  process_trajectory = compute_reward_fn_wrapper.var
+  process_trajectory = process_trajectory_fn_wrapper.var
 
 def worker_fn(trajectory):
   global process_trajectory
@@ -238,3 +238,26 @@ def her_future(trajectory, k, compute_reward):
       reward = compute_reward(achieved_goal, g, None)
       hindsight_experiences.append([o1, action, reward, o2, reward, g])
   return hindsight_experiences
+
+class HerFutureAchievedPastActual():
+  def __init__(self, k, p, compute_reward, past_goal_memory=1000):
+    self.k = k # future
+    self.p = p # past goals
+    self.compute_reward = compute_reward
+    self.goal_mem=deque(maxlen=past_goal_memory)
+  
+  def __call__(self, trajectory):
+    actual_goal = trajectory[0][5]
+    self.goal_mem.append(actual_goal)
+    achieved_goals = np.array([transition[4] for transition in trajectory])
+    len_ag = len(achieved_goals)
+    achieved_goals_range = np.array(range(len_ag))
+    hindsight_experiences = []
+    for i, (o1, action, _, o2, achieved_goal, _) in enumerate(trajectory):
+      sampled_goals = np.random.choice(achieved_goals_range[i:], min(self.k, len_ag - i), replace=False)
+      sampled_goals = list(achieved_goals[sampled_goals])
+      sampled_goals += random.choices(self.goal_mem, k=self.p)
+      for g in sampled_goals:
+        reward = self.compute_reward(achieved_goal, g, None)
+        hindsight_experiences.append([o1, action, reward, o2, reward, g])
+    return hindsight_experiences

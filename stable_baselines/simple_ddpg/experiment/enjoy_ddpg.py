@@ -12,7 +12,7 @@ def main(args):
 
     :param args: (ArgumentParser) the input arguments
     """
-    if args.env == "FetchReach-v1":
+    if "FetchReach" in args.env:
       env = CustomFetchReachEnv()
     elif "FetchPush" in args.env:
       env = CustomFetchPushEnv()

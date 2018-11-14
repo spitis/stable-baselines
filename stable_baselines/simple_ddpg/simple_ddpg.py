@@ -5,8 +5,8 @@ import trfl
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future
-from stable_baselines.simple_ddpg.noise import NormalActionNoise, OUNoiseTensorflow
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, HerFutureAchievedPastActual
+from stable_baselines.simple_ddpg.noise import OUNoiseTensorflow, NormalNoiseTensorflow
 from stable_baselines.common.policies import get_policy_from_name
 from itertools import chain
 
@@ -131,7 +131,7 @@ class SimpleDDPG(SimpleRLModel):
     self.clip_value_fn_range = clip_value_fn_range
 
     self.action_noise = action_noise
-    self.ou_action_noise = None
+    self.action_noise_fn = None
     self.epsilon_random_exploration = epsilon_random_exploration
 
     self.param_noise = param_noise
@@ -269,11 +269,16 @@ class SimpleDDPG(SimpleRLModel):
 
             # ACTION TENSOR (WITH EXPLORATION / UPDATING RMS)
             if not self.param_noise:
-              self.ou_action_noise = OUNoiseTensorflow(
-                  self.action_space.shape[-1],
-                  sigma=float(self.action_noise.split('_')[1]))
+              noise, sigma = self.action_noise.split('_')
+              sigma = float(sigma)
+              if noise =='ou':
+                self.action_noise_fn = OUNoiseTensorflow(
+                    self.action_space.shape[-1],
+                    sigma=float(sigma))
+              elif noise =='normal':
+                self.action_noise_fn = NormalNoiseTensorflow(sigma=sigma)
               with tf.control_dependencies([update_obs_rms, update_g_rms]):
-                act = self.ou_action_noise(actor_branch.policy)
+                act = self.action_noise_fn(actor_branch.policy)
                 act = epsilon_exploration_wrapper_box(
                     self.epsilon_random_exploration, self.action_space, act)
 
@@ -387,7 +392,7 @@ class SimpleDDPG(SimpleRLModel):
 
           # add action norm regularizer
           if self.action_l2_regularization > 0.:
-            mean_actor_loss += tf.nn.l2_loss(self.action_l2_regularization * (actor_branch.unadjusted_policy - 0.5) * 2)
+            mean_actor_loss += self.action_l2_regularization * tf.reduce_mean(tf.square((actor_branch.unadjusted_policy - 0.5) * 2))
 
           tf.summary.scalar("actor_loss", mean_actor_loss)
 
@@ -425,6 +430,8 @@ class SimpleDDPG(SimpleRLModel):
         with tf.variable_scope("input_info", reuse=False):
           for action_dim in range(self.action_space.shape[0]):
             tf.summary.histogram('policy_dim_{}'.format(action_dim), a_max[:,action_dim])
+            tf.summary.histogram('explor_dim_{}'.format(action_dim), action_ph[:,action_dim])
+          tf.summary.histogram('targets', targets)
           tf.summary.scalar('rewards', tf.reduce_mean(r_t))
           tf.summary.histogram('rewards', r_t)
           if len(obs_ph.shape) == 3:
@@ -471,9 +478,13 @@ class SimpleDDPG(SimpleRLModel):
     if self.hindsight_mode == 'final':
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
     elif isinstance(self.hindsight_mode,
-                    str) and 'future' in self.hindsight_mode:
+                    str) and 'future_' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
       self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+    elif isinstance(self.hindsight_mode,
+                    str) and 'futureactual_' in self.hindsight_mode:
+      _, k, p = self.hindsight_mode.split('_')
+      self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
     else:
       self.hindsight_fn = None
 
@@ -485,12 +496,12 @@ class SimpleDDPG(SimpleRLModel):
       feed_dict = {
           self.model.obs_ph: np.array(obs["observation"]),
           self.model.goal_ph: np.array(obs["desired_goal"]),
-          self.ou_action_noise.reset_noise_ph: self.reset,
+          self.action_noise_fn.reset_noise_ph: self.reset,
       }
     else:
       feed_dict = {
           self.model.obs_ph: np.array(obs),
-          self.ou_action_noise.reset_noise_ph: self.reset,
+          self.action_noise_fn.reset_noise_ph: self.reset,
       }
 
     return self.sess.run(self._act, feed_dict=feed_dict)

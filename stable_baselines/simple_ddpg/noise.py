@@ -102,3 +102,18 @@ class OUNoiseTensorflow():
   def __call__(self, batched_deterministic_actions):
     with tf.control_dependencies([self.update_noise_op]):
       return batched_deterministic_actions + tf.slice(self.noise, [0, 0], tf.shape(batched_deterministic_actions))
+
+class NormalNoiseTensorflow():
+  """
+  A gaussian action noise
+
+  :param mean: (float) the mean value of the noise
+  :param sigma: (float) the scale of the noise (std here)
+  """
+  def __init__(self, sigma=0.2):
+    self.sigma = 0.2
+    self.reset_noise_ph = tf.placeholder(tf.float32) # to make it have a consistent interface with ou. 
+
+  def __call__(self, batched_deterministic_actions):
+    return batched_deterministic_actions + tf.random_normal(tf.shape(batched_deterministic_actions), stddev=self.sigma)
+
