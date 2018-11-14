@@ -270,7 +270,7 @@ class SimpleDQN(SimpleRLModel):
       self.hindsight_fn = None
 
     
-    self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn)
+    self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn, n_cpus=min(self.n_envs, 8))
 
     # Create the schedule for exploration starting from 1.
     self.exploration = LinearSchedule(

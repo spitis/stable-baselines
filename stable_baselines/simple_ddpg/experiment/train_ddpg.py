@@ -8,7 +8,7 @@ from gym.envs.robotics import FetchReachEnv
 from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv
 
 from stable_baselines.a2c.utils import conv_to_fc
-from stable_baselines.simple_ddpg import SimpleDDPG as DDPG
+from stable_baselines.simple_ddpg import SimpleDDPG as DDPG, make_feedforward_extractor, identity_extractor
 from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 
@@ -18,7 +18,7 @@ class SimpleMlpPolicy(FeedForwardPolicy):
   """
   def __init__(self, *args, **kwargs):
       super(SimpleMlpPolicy, self).__init__(*args, **kwargs,
-                                         layers=[400,400],
+                                         layers=[256,256],
                                          layer_norm=True,
                                          feature_extraction="mlp")
 
@@ -29,26 +29,36 @@ def main(args):
     :param args: (ArgumentParser) the input arguments100000
     """
     if "FetchReach" in args.env:
-      env = SubprocVecEnv([lambda: CustomFetchReachEnv() for _ in range(48)])
+      env = SubprocVecEnv([CustomFetchReachEnv for _ in range(12)])
     elif "FetchPush" in args.env:
-      env = SubprocVecEnv([lambda: CustomFetchPushEnv() for _ in range(48)])
+      env = SubprocVecEnv([CustomFetchPushEnv for _ in range(12)])
     else:
-      env = SubprocVecEnv([lambda: gym.make(args.env) for _ in range(48)])
+      env = SubprocVecEnv([lambda: gym.make(args.env) for _ in range(12)])
+
+    if not args.folder:
+      args.folder = '/tmp'
 
     model = DDPG(
         env=env,
         policy=SimpleMlpPolicy,
         gamma=0.98,
         actor_lr=1e-3,
+        critic_lr=1e-3,
         learning_starts=2500,
-        target_network_update_frac=0.0005,
-        epsilon_random_exploration=0.2,
+        joint_feature_extractor=make_feedforward_extractor([64]),
+        joint_goal_feature_extractor=make_feedforward_extractor([64], scope='goal_feats'),
+        clip_value_fn_range=(0., 1.),
+        train_freq=20,
+        target_network_update_frac=0.05,
+        target_network_update_freq=100,
+        epsilon_random_exploration=0.1,
+        critic_l2_regularization=0.,
+        action_l2_regularization=1e-2,
         verbose=1,
-        batch_size=128,
+        batch_size=256,
         buffer_size=1000000,
-        observation_range=(-200., 200.),
         hindsight_mode=args.her,
-        tensorboard_log="/tmp/ddpg_tensorboard/",
+        tensorboard_log="{}/ddpg_tensorboard/".format(args.folder),
     )
     model.learn(total_timesteps=args.max_timesteps, tb_log_name="DDPG_{}_{}".format(args.env, args.tb), log_interval=10)
 
@@ -65,5 +75,6 @@ if __name__ == '__main__':
     parser.add_argument('--max-timesteps', default=100000, type=int, help="Maximum number of timesteps")
     parser.add_argument('--her', default='none', type=str, help="Hindsight mode (e.g., future_4 or final)")
     parser.add_argument('--tb', default='1', type=str, help="Tensorboard_name")
+    parser.add_argument('--folder', default='/tmp', type=str, help="Tensorboard_folder")
     args = parser.parse_args()
     main(args)

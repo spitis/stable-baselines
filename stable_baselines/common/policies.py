@@ -148,6 +148,7 @@ class BasePolicy(ABC):
     self.pdtype = make_proba_dist_type(ac_space, is_DQN=is_DQN)
     self.is_discrete = isinstance(ac_space, Discrete)
     self.policy = None
+    self.unadjusted_policy = None # for box envs (see _setup_and_validate)
     self.proba_distribution = None
     self.value_fn = None
     self.deterministic_action = None
@@ -176,7 +177,8 @@ class BasePolicy(ABC):
         self.policy = tf.nn.softmax(self.policy)
       elif isinstance(self.ac_space, Box):
         print('conforming actions to action_space with highs {} and lows {}'.format(self.ac_space.high, self.ac_space.low))
-        self.policy = tf.nn.sigmoid(self.policy) * (self.ac_space.high - self.ac_space.low) + self.ac_space.low
+        self.unadjusted_policy = tf.nn.sigmoid(self.policy)
+        self.policy = self.unadjusted_policy * (self.ac_space.high - self.ac_space.low) + self.ac_space.low
       self._value = self.value_fn[:, 0]
 
   def step(self, obs, state=None, mask=None, deterministic=True, goal=None):

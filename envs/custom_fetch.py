@@ -42,15 +42,16 @@ class CustomFetchReachEnv(FetchReachEnv):
 
 class CustomFetchPushEnv(FetchPushEnv):
 
-  def __init__(self, max_step=50):
+  def __init__(self, max_step=50, reward_scale = 1.):
     super().__init__(reward_type='sparse')
     self.max_step = max_step
     self.num_step = 0
+    self.reward_scale = reward_scale
 
   def compute_reward(self, achieved_goal, goal, info):
     # Compute distance between goal and the achieved goal.
     d = goal_distance(achieved_goal, goal)
-    return (d <= self.distance_threshold).astype(np.float32)
+    return (d <= self.distance_threshold).astype(np.float32) * self.reward_scale
 
   def step(self, action):
     action = np.clip(action, self.action_space.low, self.action_space.high)
@@ -61,7 +62,7 @@ class CustomFetchPushEnv(FetchPushEnv):
     obs = self._get_obs()
 
     reward = self.compute_reward(obs['achieved_goal'], self.goal, None)
-    done = 1. if self.num_step >= self.max_step else reward
+    done = 1. if ((self.num_step >= self.max_step) or (reward > 0.)) else 0.
     info = None
 
     return obs, reward, done, info

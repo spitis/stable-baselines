@@ -29,8 +29,11 @@ class SimpleDDPG(SimpleRLModel):
     :param rescale_goal: (bool) whether or not to rescale the goal to [0., 1.] (if None, rescale_input)
     :param normalize_input: (bool) whether to  normalize input (default True)
     :param normalize_goal: (bool) whether to  normalize goal (if None, normalize_input)
-    :param observation_range: (tuple) range for observation clipping
-    :param goal_range: (tuple) range for goal clipping (if None, observation_range)
+    :param observation_pre_norm_range: (tuple) range for observation clipping
+    :param observation_post_norm_range: (tuple) range for observation clipping after normalization
+    :param goal_pre_norm_range: (tuple) range for goal clipping (if None, observation_pre_norm_range)
+    :param goal_post_norm_range: (tuple) range for goal clipping after normalization (if None, observation_post_norm_range)
+    :param clip_value_range: ()
 
     :param noise_type: (str) the noises ('normal' or 'ou') to use 
      
@@ -62,8 +65,11 @@ class SimpleDDPG(SimpleRLModel):
                rescale_goal=None,
                normalize_input=True,
                normalize_goal=None,
-               observation_range=(-5., 5.),
-               goal_range=None,
+               observation_pre_norm_range=(-200., 200.),
+               goal_pre_norm_range=None,
+               observation_post_norm_range=(-5., 5.),
+               goal_post_norm_range=None,
+               clip_value_fn_range=None,
                action_noise='ou_0.2',
                epsilon_random_exploration=0.,
                param_noise=False,
@@ -76,6 +82,7 @@ class SimpleDDPG(SimpleRLModel):
                hindsight_mode=None,
                grad_norm_clipping=10.,
                critic_l2_regularization=1e-2,
+               action_l2_regularization=0.,
                verbose=0,
                tensorboard_log=None,
                _init_setup_model=True):
@@ -109,11 +116,19 @@ class SimpleDDPG(SimpleRLModel):
     self.obs_rms = None
     self.g_rms = None
 
-    self.observation_range = observation_range
-    if goal_range is not None:
-      self.goal_range = goal_range
+    self.observation_pre_norm_range = observation_pre_norm_range
+    if goal_pre_norm_range is not None:
+      self.goal_pre_norm_range = goal_pre_norm_range
     else:
-      self.goal_range = self.observation_range
+      self.goal_pre_norm_range = self.observation_pre_norm_range
+
+    self.observation_post_norm_range = observation_post_norm_range
+    if goal_post_norm_range is not None:
+      self.goal_post_norm_range = goal_post_norm_range
+    else:
+      self.goal_post_norm_range = self.observation_post_norm_range
+
+    self.clip_value_fn_range = clip_value_fn_range
 
     self.action_noise = action_noise
     self.ou_action_noise = None
@@ -135,6 +150,7 @@ class SimpleDDPG(SimpleRLModel):
 
     self.grad_norm_clipping = grad_norm_clipping
     self.critic_l2_regularization = critic_l2_regularization
+    self.action_l2_regularization = action_l2_regularization
 
     self.tensorboard_log = tensorboard_log
 
@@ -178,27 +194,29 @@ class SimpleDDPG(SimpleRLModel):
                   name='obs_ph')
               processed_x = rescale_obs_ph(
                   tf.to_float(obs_ph), ob_space, self.rescale_input)
+              processed_x = tf.clip_by_value(processed_x, self.observation_pre_norm_range[0], self.observation_pre_norm_range[1])
               update_obs_rms = self.obs_rms.make_update_op(processed_x)
-              processed_x = tf.clip_by_value(
-                  normalize(processed_x, self.obs_rms),
-                  self.observation_range[0], self.observation_range[1])
+              processed_x = normalize(processed_x, self.obs_rms)
+              processed_x = tf.clip_by_value(processed_x, self.observation_post_norm_range[0], self.observation_post_norm_range[1])
+                  
               main_input, main_joint_tvars = self.joint_feature_extractor(
                   processed_x)
 
             goal_phs = goal_ph = None
             update_g_rms = tf.no_op()
             if self.goal_space is not None:
-              with tf.variable_scope('feature_extraction', reuse=True):
+              with tf.variable_scope('feature_extraction', reuse=tf.AUTO_REUSE):
                 goal_ph = tf.placeholder(
                     shape=(None,) + self.goal_space.shape,
                     dtype=self.goal_space.dtype,
                     name='goal_ph')
                 processed_g = rescale_obs_ph(
                     tf.to_float(goal_ph), self.goal_space, self.rescale_goal)
+                processed_g = tf.clip_by_value(processed_g, self.goal_pre_norm_range[0], self.goal_pre_norm_range[1])
                 update_g_rms = self.g_rms.make_update_op(processed_g)
-                processed_g = tf.clip_by_value(
-                    normalize(processed_g, self.g_rms), self.goal_range[0],
-                    self.goal_range[1])
+                processed_g = normalize(processed_g, self.g_rms)
+                processed_g = tf.clip_by_value(processed_g, self.goal_post_norm_range[0], self.goal_post_norm_range[1])
+
                 main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
                     processed_g)
 
@@ -255,9 +273,14 @@ class SimpleDDPG(SimpleRLModel):
                   self.action_space.shape[-1],
                   sigma=float(self.action_noise.split('_')[1]))
               with tf.control_dependencies([update_obs_rms, update_g_rms]):
+                act = self.ou_action_noise(actor_branch.policy)
                 act = epsilon_exploration_wrapper_box(
-                    self.epsilon_random_exploration, self.action_space,
-                    self.ou_action_noise(actor_branch.policy))
+                    self.epsilon_random_exploration, self.action_space, act)
+
+                assert np.allclose(self.action_space.low, self.action_space.low[0])
+                assert np.allclose(self.action_space.high, self.action_space.high[0])
+
+                act = tf.clip_by_value(act, self.action_space.low[0], self.action_space.high[0])
             else:
               raise NotImplementedError('param_noise to be added later')
 
@@ -272,13 +295,13 @@ class SimpleDDPG(SimpleRLModel):
                   tf.to_float(target_obs_ph), ob_space, self.rescale_input)
               processed_x = tf.clip_by_value(
                   normalize(processed_x, self.obs_rms),
-                  self.observation_range[0], self.observation_range[1])
+                  self.observation_pre_norm_range[0], self.observation_pre_norm_range[1])
               target_input, target_joint_tvars = self.joint_feature_extractor(
                   processed_x)
 
             target_goal_phs = None
             if self.goal_space is not None:
-              with tf.variable_scope('feature_extraction', reuse=True):
+              with tf.variable_scope('feature_extraction', reuse=tf.AUTO_REUSE):
                 target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
                     processed_g)
 
@@ -331,13 +354,15 @@ class SimpleDDPG(SimpleRLModel):
           pcont_t *= (1 - done_mask_ph) * pcont_t
 
           # target q values based on 1-step bellman (no double q for ddpg)
+          preds = tf.squeeze(critic_branch.value_fn, 1)
           l2_loss, loss_info = trfl.td_learning(
-              tf.squeeze(critic_branch.value_fn, 1), r_t, pcont_t,
+              preds, r_t, pcont_t,
               tf.squeeze(target_critic_branch.value_fn, 1))
-          tf_util.NOT_USED(
-              loss_info
-          )  # loss_info is named_tuple with target values and td_error
-          mean_critic_loss = tf.reduce_mean(l2_loss)
+          tf_util.NOT_USED(l2_loss)
+          targets = loss_info.target
+          if self.clip_value_fn_range is not None:
+            targets = tf.clip_by_value(targets, self.clip_value_fn_range[0], self.clip_value_fn_range[1])
+          mean_critic_loss = tf.reduce_mean(0.5 * tf.square(preds - targets))
 
           # add regularizer
           if self.critic_l2_regularization > 0.:
@@ -360,23 +385,29 @@ class SimpleDDPG(SimpleRLModel):
           tf_util.NOT_USED(loss_info)
           mean_actor_loss = tf.reduce_mean(l2_loss)
 
+          # add action norm regularizer
+          if self.action_l2_regularization > 0.:
+            mean_actor_loss += tf.nn.l2_loss(self.action_l2_regularization * (actor_branch.unadjusted_policy - 0.5) * 2)
+
           tf.summary.scalar("actor_loss", mean_actor_loss)
 
-          #""" TOTAL LOSS"""
-
-          loss = mean_critic_loss * self.critic_lr / self.actor_lr + mean_actor_loss
-
           # compute optimization op (potentially with gradient clipping)
-          optimizer = tf.train.AdamOptimizer(learning_rate=self.actor_lr)
+          actor_optimizer  = tf.train.AdamOptimizer(learning_rate=self.actor_lr)
+          critic_optimizer = tf.train.AdamOptimizer(learning_rate=self.critic_lr)
 
-          gradients = optimizer.compute_gradients(loss, var_list=main_vars)
+          actor_gradients  = actor_optimizer.compute_gradients(mean_actor_loss,  var_list=main_joint_tvars + actor_branch.trainable_vars)
+          critic_gradients = critic_optimizer.compute_gradients(mean_critic_loss, var_list=main_joint_tvars + critic_branch.trainable_vars)
           if self.grad_norm_clipping is not None:
-            for i, (grad, var) in enumerate(gradients):
+            for i, (grad, var) in enumerate(actor_gradients):
               if grad is not None:
-                gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping),
-                                var)
+                actor_gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping), var)
+            for i, (grad, var) in enumerate(critic_gradients):
+              if grad is not None:
+                critic_gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping), var)
 
-          training_step = optimizer.apply_gradients(gradients)
+          tsa = actor_optimizer.apply_gradients(actor_gradients)
+          tsc = critic_optimizer.apply_gradients(critic_gradients)
+          training_step = tf.group([tsa, tsc])
 
         with tf.name_scope('update_target_network_ops'):
           init_target_network = []
@@ -392,6 +423,8 @@ class SimpleDDPG(SimpleRLModel):
           init_target_network = tf.group(*init_target_network)
 
         with tf.variable_scope("input_info", reuse=False):
+          for action_dim in range(self.action_space.shape[0]):
+            tf.summary.histogram('policy_dim_{}'.format(action_dim), a_max[:,action_dim])
           tf.summary.scalar('rewards', tf.reduce_mean(r_t))
           tf.summary.histogram('rewards', r_t)
           if len(obs_ph.shape) == 3:
@@ -444,7 +477,7 @@ class SimpleDDPG(SimpleRLModel):
     else:
       self.hindsight_fn = None
 
-    self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn)
+    self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn, n_cpus=min(self.n_envs, 8))
 
   def _get_action_for_single_obs(self, obs):
     """Called during training loop to get online action (with exploration)"""
@@ -580,8 +613,11 @@ class SimpleDDPG(SimpleRLModel):
         'rescale_goal':self.rescale_goal,
         'normalize_input':self.normalize_input,
         'normalize_goal':self.normalize_goal,
-        'observation_range':self.observation_range,
-        'goal_range':self.goal_range,
+        'observation_pre_norm_range':self.observation_pre_norm_range,
+        'observation_post_norm_range':self.observation_post_norm_range,
+        'goal_pre_norm_range':self.goal_pre_norm_range,
+        'goal_post_norm_range':self.goal_post_norm_range,
+        'clip_value_fn_range': self.clip_value_fn_range,
         'action_noise': self.action_noise,
         'epsilon_random_exploration': self.epsilon_random_exploration,
         "param_noise": self.param_noise,
@@ -594,6 +630,7 @@ class SimpleDDPG(SimpleRLModel):
         'hindsight_mode': self.hindsight_mode,
         "grad_norm_clipping": self.grad_norm_clipping,
         'critic_l2_regularization': self.critic_l2_regularization,
+        'action_l2_regularization': self.action_l2_regularization,
         "tensorboard_log": self.tensorboard_log,
         "verbose": self.verbose,
         "observation_space": self.observation_space,
@@ -627,6 +664,27 @@ def identity_extractor(input_tensor):
   trainable_variables = []
   return input_tensor, trainable_variables
 
+def make_feedforward_extractor(layers=[256], activation=tf.nn.relu, scope=None):
+  def feed_forward_extractor(input_tensor):
+    if scope is not None:
+      with tf.variable_scope(scope):
+        tvars = []
+        x = input_tensor
+        for layer_size in layers:
+          layer = tf.layers.Dense(layer_size, activation)
+          x = layer(x)
+          tvars += layer.trainable_variables
+        return x, tvars
+    else:
+      tvars = []
+      x = input_tensor
+      for layer_size in layers:
+        layer = tf.layers.Dense(layer_size, activation)
+        x = layer(x)
+        tvars += layer.trainable_variables
+      return x, tvars
+
+  return feed_forward_extractor
 
 def rescale_obs_ph(obs_ph, ob_space, rescale_input):
   processed_x = tf.to_float(obs_ph)

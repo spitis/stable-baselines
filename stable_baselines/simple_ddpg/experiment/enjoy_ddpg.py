@@ -2,7 +2,7 @@ import argparse
 
 import gym
 from gym import wrappers
-from envs.custom_fetch import CustomFetchReachEnv
+from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv
 
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG
 
@@ -14,8 +14,10 @@ def main(args):
     """
     if args.env == "FetchReach-v1":
       env = CustomFetchReachEnv()
+    elif "FetchPush" in args.env:
+      env = CustomFetchPushEnv()
     else:
-      env = args.env
+      env = gym.make(args.env)
     model_filename = "ddpg_model_{}_{}.pkl".format(args.env, args.max_timesteps)
     model = DDPG.load(model_filename, env)
 

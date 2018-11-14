@@ -409,16 +409,15 @@ class SimpleRLModel(BaseRLModel):
         new_obses, rewards, dones, _ = self.env.step(actions)
 
 
-        # Do the learning fetch tensorboard summaries
+        # Do the learning and fetch tensorboard summaries
         summaries = self._process_experience(obses, actions, rewards, new_obses, dones)
         # Do some bookkeeping
-        if writer is not None:
+        if writer is not None and summaries:
           for summary in summaries:
             writer.add_summary(summary, self.global_step)
             ep_rewards = np.expand_dims(rewards, 1)
             ep_dones = np.expand_dims(dones, 1)
-            tb_episode_rewards = total_episode_reward_logger(tb_episode_rewards, ep_rewards,
-                                                        ep_dones, writer, step)
+            tb_episode_rewards = total_episode_reward_logger(tb_episode_rewards, ep_rewards, ep_dones, writer, step)
 
         legacy_episode_rewards_per_env += rewards
         for idx in np.argwhere(dones):
