@@ -52,7 +52,7 @@ if __name__ == '__main__':
     parser.add_argument('--no-render', default=False, action="store_true", help="Disable rendering")
     parser.add_argument('--max-timesteps', default=1000, type=int, help="Maximum number of timesteps")
     parser.add_argument('--model-type', default='mlp', type=str, help="Model type: cnn, mlp (default)")
-    parser.add_argument('--room-file', default='room_5x5_empty.txt', type=str,
+    parser.add_argument('--room-file', default='room_5x5_empty', type=str,
                         help="Room type: room_5x5_empty (default), 2_room_9x9")
     args = parser.parse_args()
     main(args)

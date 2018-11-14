@@ -31,7 +31,7 @@ class GoalGridWorldEnv(gym.GoalEnv):
 
     MOVE_DIRECTION = [[0,-1],[1,0],[0,1],[-1,0]] # up, right, down, left
 
-    def __init__(self, grid_size=16, max_step=100, grid_file=None, seed=1337):
+    def __init__(self, grid_size=16, max_step=100, grid_file=None, random_init_loc=True, seed=1337):
         # Action enumeration
         self.actions = GoalGridWorldEnv.Actions
 
@@ -41,12 +41,14 @@ class GoalGridWorldEnv(gym.GoalEnv):
         # Object types
         self.objects = GoalGridWorldEnv.ObjectTypes
 
+        # Whether to change initialization of the agent
+        self.random_init_loc = random_init_loc
+
         # Environment configuration
         self.grid_size = grid_size
         self.max_step = max_step
 
         self.end_of_game = False
-        self.agent_pos = [0,0]
 
         if grid_file:
             curr_abs_path = os.path.dirname(os.path.abspath(__file__))
@@ -66,6 +68,12 @@ class GoalGridWorldEnv(gym.GoalEnv):
             self.goal_loc = self._sample_goal_loc()
             self.goal = np.copy(self.grid)
             self.goal[self.goal_loc[0], self.goal_loc[1]] = self.objects.agent
+
+        # Set agent initial location
+        if self.random_init_loc:
+            self.agent_pos = self._sample_goal_loc()
+        else:
+            self.agent_pos = [0,0]
 
         # Observations are dictionaries containing an
         # grid observation, achieved and desired goals
@@ -93,7 +101,10 @@ class GoalGridWorldEnv(gym.GoalEnv):
     def reset(self):
         self.end_of_game = False
         self.num_step = 0
-        self.agent_pos = [0,0]
+        if self.random_init_loc:
+            self.agent_pos = self._sample_goal_loc()
+        else:
+            self.agent_pos = [0,0]
         self.goal_loc = self._sample_goal_loc()
         self.goal = np.copy(self.grid)
         self.goal[self.goal_loc[0], self.goal_loc[1]] = self.objects.agent
