@@ -23,7 +23,7 @@ def main(args):
     :param args: (ArgumentParser) the input arguments
     """
     grid_file = "{}.txt".format(args.room_file)
-    env = GoalGridWorldEnv(grid_size=9, max_step=12, grid_file=grid_file)
+    env = GoalGridWorldEnv(grid_size=9, max_step=25, grid_file=grid_file)
     model_filename = "goalgridworld_model_{}_{}_{}.pkl".format(args.model_type, args.max_timesteps, args.room_file)
     model = DQN.load(model_filename, env, goal_space=env.observation_space.spaces['desired_goal'])
 

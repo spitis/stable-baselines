@@ -28,8 +28,8 @@ def gridworld_cnn(scaled_images, **kwargs):
     """
   activ = tf.nn.relu
   layer_1 = tf.layers.conv2d(scaled_images, filters=64, kernel_size=3, padding='SAME', activation=activ)
-  layer_1 = tf.layers.conv2d(scaled_images, filters=64, kernel_size=3, padding='SAME', activation=activ)
-  return conv_to_fc(layer_1)
+  layer_2 = tf.layers.conv2d(layer_1, filters=64, kernel_size=3, padding='SAME', activation=activ)
+  return conv_to_fc(layer_2)
 
 class GridWorldCnnPolicy(FeedForwardPolicy):
   """
@@ -59,7 +59,7 @@ def main(args):
     :param args: (ArgumentParser) the input arguments100000
     """
     grid_file = "{}.txt".format(args.room_file)
-    env = GoalGridWorldEnv(grid_size=5, max_step=12, grid_file=grid_file)
+    env = GoalGridWorldEnv(grid_size=5, max_step=50, grid_file=grid_file)
     if args.model_type == "mlp":
         policy = GridWorldMlpPolicy
     elif args.model_type == "cnn":
@@ -69,7 +69,7 @@ def main(args):
         env=env,
         policy=policy,
         learning_rate=1e-4,
-        gamma=0.95,
+        gamma=0.98,
         learning_starts=1000,
         verbose=1,
         batch_size=128,
@@ -79,6 +79,7 @@ def main(args):
         target_network_update_frac=0.05,
         target_network_update_freq=20,
         hindsight_mode=args.her,
+        hindsight_frac=0.6,
         tensorboard_log="./dqn_goalgridworld_tensorboard/{}".format(args.room_file),
     )
     assert model.goal_space is not None
