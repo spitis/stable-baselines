@@ -54,11 +54,13 @@ class SimpleDQN(SimpleRLModel):
                target_network_update_frac=1.,
                target_network_update_freq=500,
                hindsight_mode=None,
+               hindsight_frac=0.,
                double_q=True,
                grad_norm_clipping=10.,
                verbose=0,
                tensorboard_log=None,
-               _init_setup_model=True):
+               _init_setup_model=True,
+               use_landmark=False):
 
     super(SimpleDQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True)
 
@@ -80,6 +82,8 @@ class SimpleDQN(SimpleRLModel):
     self.target_network_update_freq = target_network_update_freq
 
     self.hindsight_mode = hindsight_mode
+    self.hindsight_frac = hindsight_frac
+    self.use_landmark = use_landmark
 
     self.double_q = double_q
     self.grad_norm_clipping = grad_norm_clipping
@@ -93,6 +97,7 @@ class SimpleDQN(SimpleRLModel):
     self.global_step = 0
     self.task_step = 0
     self.replay_buffer = None
+    self.replay_buffer_hindsight = None
     self.exploration = None
 
     # Several additional props to be set in self._setup_model()
@@ -267,9 +272,23 @@ class SimpleDQN(SimpleRLModel):
     elif isinstance(self.hindsight_mode, str) and 'future' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
       self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+    # elif isinstance(self.hindsight_mode, str) and 'landmark' in self.hindsight_mode:
     else:
       self.hindsight_fn = None
 
+    # Add additional fields for the hindsight replay buffer, if using landmark
+    # When using landmark, current observation becomes the landmark when goal_space
+    # is the same as the observation space, for now
+    hindsight_items = copy.deepcopy(items)
+
+    if self.use_landmark:
+        if self.observation_space.shape == self.env.observation_space.spaces['desired_goal'].shape:
+            hindsight_items += [("observation_init", self.env.observation_space.shape),  # Shape of the observation
+                      ("achieved_goal", self.env.observation_space.shape)]
+
+    # Create a secondary replay buffer
+    if self.hindsight_fn is not None:
+        self.replay_buffer_hindsight = ReplayBuffer(self.buffer_size, hindsight_items)
     
     self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn, n_cpus=min(self.n_envs, 8))
 
@@ -324,7 +343,7 @@ class SimpleDQN(SimpleRLModel):
           self.hindsight_subbuffer.commit_subbuffer(idx)
           if len(self.hindsight_subbuffer) == self.n_envs:
             for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.process_trajectories()):
-              self.replay_buffer.add(*hindsight_experience)
+              self.replay_buffer_hindsight.add(*hindsight_experience)
             self.hindsight_subbuffer.clear_main_buffer()
 
     summaries = []
@@ -335,8 +354,28 @@ class SimpleDQN(SimpleRLModel):
       if self.task_step > self.learning_starts:
         if self.task_step % self.train_freq == 0:
           if goal_agent:
-            obses_t, actions, rewards, obses_tp1, dones, desired_g =\
-                                                          self.replay_buffer.sample(self.batch_size)
+            if self.replay_buffer_hindsight is not None and self.hindsight_frac > 0.:
+                hindsight_batch_size = round(self.batch_size * self.hindsight_frac)
+                real_batch_size = self.batch_size - hindsight_batch_size
+
+                # Sample from real batch
+                obses_t, actions, rewards, obses_tp1, dones, desired_g = \
+                    self.replay_buffer.sample(real_batch_size)
+
+                # Sample from hindsight batch
+                obses_t_hs, actions_hs, rewards_hs, obses_tp1_hs, dones_hs, desired_g_hs = \
+                    self.replay_buffer_hindsight.sample(hindsight_batch_size)
+
+                # Concatenate the two
+                obses_t = np.concatenate([obses_t, obses_t_hs], 0)
+                actions = np.concatenate([actions, actions_hs], 0)
+                rewards = np.concatenate([rewards, rewards_hs], 0)
+                obses_tp1 = np.concatenate([obses_tp1, obses_tp1_hs], 0)
+                dones = np.concatenate([dones, dones_hs], 0)
+                desired_g = np.concatenate([desired_g, desired_g_hs], 0)
+            else:
+                obses_t, actions, rewards, obses_tp1, dones, desired_g =\
+                                                              self.replay_buffer.sample(self.batch_size)
           else:
             obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
 
