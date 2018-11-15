@@ -33,9 +33,13 @@ class SimpleDDPG(SimpleRLModel):
     :param observation_post_norm_range: (tuple) range for observation clipping after normalization
     :param goal_pre_norm_range: (tuple) range for goal clipping (if None, observation_pre_norm_range)
     :param goal_post_norm_range: (tuple) range for goal clipping after normalization (if None, observation_post_norm_range)
-    :param clip_value_range: ()
+    :param clip_value_fn_range: (tuple) range for value function target clipping
+    
+    :param goal_to_prototype_state: (bool) whether to map the goal to prototype state and learn v(s, proto(g)) instead of v(s, g)
 
-    :param noise_type: (str) the noises ('normal' or 'ou') to use 
+    :param action_noise: (str) the noises ('normal' or 'ou') to use 
+    :param epsilon_random_exploration: (float) the episilon to use for random exploration
+    :param param_noise: (bool) whether to use parameter noise (not supported)
      
     :param buffer_size: (int) size of the replay goal_ph
     :param train_freq: (int) update the model every `train_freq` steps
@@ -44,7 +48,6 @@ class SimpleDDPG(SimpleRLModel):
  
     :param target_network_update_frac: (float) fraction by which to update the target network every time.
     :param target_network_update_freq: (int) update the target network every `target_network_update_freq` steps.
-
 
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param tensorboard_log: (str) the log location for tensorboard (if None, no logging)
@@ -70,6 +73,7 @@ class SimpleDDPG(SimpleRLModel):
                observation_post_norm_range=(-5., 5.),
                goal_post_norm_range=None,
                clip_value_fn_range=None,
+               goal_to_prototype_state=False,
                action_noise='ou_0.2',
                epsilon_random_exploration=0.,
                param_noise=False,
@@ -129,6 +133,11 @@ class SimpleDDPG(SimpleRLModel):
       self.goal_post_norm_range = self.observation_post_norm_range
 
     self.clip_value_fn_range = clip_value_fn_range
+
+    self.goal_to_prototype_state = goal_to_prototype_state
+    if self.goal_to_prototype_state and self.goal_space is not None:
+      if self.goal_space == self.observation_space:
+        self.goal_to_prototype_state = False
 
     self.action_noise = action_noise
     self.action_noise_fn = None
@@ -203,6 +212,7 @@ class SimpleDDPG(SimpleRLModel):
                   processed_x)
 
             goal_phs = goal_ph = None
+            prototype = None
             update_g_rms = tf.no_op()
             if self.goal_space is not None:
               with tf.variable_scope('feature_extraction', reuse=tf.AUTO_REUSE):
@@ -217,8 +227,16 @@ class SimpleDDPG(SimpleRLModel):
                 processed_g = normalize(processed_g, self.g_rms)
                 processed_g = tf.clip_by_value(processed_g, self.goal_post_norm_range[0], self.goal_post_norm_range[1])
 
-                main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
-                    processed_g)
+                if self.goal_to_prototype_state:
+                  prototype_map = tf.layers.Dense(self.observation_space.shape[-1])
+                  prototype, prototype_vars = prototype_map(processed_g)
+                  main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
+                      prototype)
+                  main_goal_joint_tvars += prototype_vars
+                else:
+                  main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
+                      processed_g)
+
 
               main_joint_tvars = list(
                   set(main_joint_tvars + main_goal_joint_tvars))
@@ -307,8 +325,15 @@ class SimpleDDPG(SimpleRLModel):
             target_goal_phs = None
             if self.goal_space is not None:
               with tf.variable_scope('feature_extraction', reuse=tf.AUTO_REUSE):
-                target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
-                    processed_g)
+                if self.goal_to_prototype_state:
+                  prototype_map = tf.layers.Dense(self.observation_space.shape[-1])
+                  target_prototype, prototype_vars = prototype_map(processed_g)
+                  target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
+                      target_prototype)
+                  main_goal_joint_tvars += prototype_vars
+                else:
+                  target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
+                      processed_g)
 
               target_joint_tvars = list(
                   set(target_joint_tvars + main_goal_joint_tvars))
