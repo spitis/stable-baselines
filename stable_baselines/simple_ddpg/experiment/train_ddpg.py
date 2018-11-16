@@ -4,8 +4,9 @@ import numpy as np
 import tensorflow as tf
 import gym
 from gym import wrappers
-from gym.envs.robotics import FetchReachEnv
 from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv
+from envs import discrete_to_box_wrapper
+from envs.goal_grid import GoalGridWorldEnv
 
 from stable_baselines.a2c.utils import conv_to_fc
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG, make_feedforward_extractor, identity_extractor
@@ -33,6 +34,9 @@ def main(args):
       env = SubprocVecEnv([CustomFetchReachEnv for _ in range(48)])
     elif "CustomFetchPush" in args.env:
       env = SubprocVecEnv([CustomFetchPushEnv for _ in range(48)])
+    elif "GoalGrid" in args.env:
+      grid_file = "{}.txt".format(args.room_file)
+      env = SubprocVecEnv([lambda: discrete_to_box_wrapper(GoalGridWorldEnv(grid_size=5, max_step=50, grid_file=grid_file)) for _ in range(16)])
     else:
       env = SubprocVecEnv([lambda: gym.make(args.env) for _ in range(48)])
 
@@ -42,9 +46,9 @@ def main(args):
     model = DDPG(
         env=env,
         policy=SimpleMlpPolicy,
-        gamma=0.98,
+        gamma=0.96,
         actor_lr=1e-3,
-        critic_lr=1e-3,
+        critic_lr=1e-4,
         learning_starts=1000,
         joint_feature_extractor=None,
         joint_goal_feature_extractor=None,
@@ -52,12 +56,12 @@ def main(args):
         train_freq=10,
         target_network_update_frac=0.02,
         target_network_update_freq=20,
-        epsilon_random_exploration=0.2,
-        action_noise='normal_0.2',
+        epsilon_random_exploration=0.,
+        action_noise='normal_0.5',
         critic_l2_regularization=0.,
-        action_l2_regularization=1e-2,
+        action_l2_regularization=1e-4,
         verbose=1,
-        batch_size=1024,
+        batch_size=128,
         buffer_size=2000000,
         hindsight_mode=args.her,
         tensorboard_log="{}/ddpg_tensorboard/".format(args.folder),
@@ -78,5 +82,7 @@ if __name__ == '__main__':
     parser.add_argument('--her', default='none', type=str, help="Hindsight mode (e.g., future_4 or final)")
     parser.add_argument('--tb', default='1', type=str, help="Tensorboard_name")
     parser.add_argument('--folder', default='/tmp', type=str, help="Tensorboard_folder")
+    parser.add_argument('--room-file', default='room_5x5_empty', type=str,
+                        help="Room type: room_5x5_empty (default), 2_room_9x9")
     args = parser.parse_args()
     main(args)

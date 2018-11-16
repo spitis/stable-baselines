@@ -118,7 +118,7 @@ class GoalGridWorldEnv(gym.GoalEnv):
         :param action:
         :return:
         """
-        assert self.action_space.contains(action)
+        # assert self.action_space.contains(action)
         # Take action, get reward, get observation
         self._take_action(action)
         obs = self._get_obs()

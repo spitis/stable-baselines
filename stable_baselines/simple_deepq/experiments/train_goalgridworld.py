@@ -27,9 +27,9 @@ def gridworld_cnn(scaled_images, **kwargs):
     :return: (TensorFlow Tensor) The CNN output layer
     """
   activ = tf.nn.relu
-  layer_1 = tf.layers.conv2d(scaled_images, filters=64, kernel_size=3, padding='SAME', activation=activ)
-  layer_2 = tf.layers.conv2d(layer_1, filters=64, kernel_size=3, padding='SAME', activation=activ)
-  return conv_to_fc(layer_2)
+  h = tf.layers.conv2d(scaled_images, filters=32, kernel_size=5, padding='SAME', activation=activ)
+  h = tf.layers.conv2d(h, filters=64, kernel_size=5, padding='SAME', activation=activ)
+  return conv_to_fc(h)
 
 class GridWorldCnnPolicy(FeedForwardPolicy):
   """
@@ -39,7 +39,7 @@ class GridWorldCnnPolicy(FeedForwardPolicy):
   def __init__(self, *args, **kwargs):
       super(GridWorldCnnPolicy, self).__init__(*args, **kwargs,
                                     feature_extraction="cnn",
-                                    cnn_extractor=gridworld_cnn, layers=[128])
+                                    cnn_extractor=gridworld_cnn, layers=[256])
 
 
 class GridWorldMlpPolicy(FeedForwardPolicy):
@@ -48,7 +48,7 @@ class GridWorldMlpPolicy(FeedForwardPolicy):
   """
   def __init__(self, *args, **kwargs):
       super(GridWorldMlpPolicy, self).__init__(*args, **kwargs,
-                                         layers=[64,64,64],
+                                         layers=[400,400],
                                          layer_norm=True,
                                          feature_extraction="mlp")
 
@@ -59,7 +59,7 @@ def main(args):
     :param args: (ArgumentParser) the input arguments100000
     """
     grid_file = "{}.txt".format(args.room_file)
-    env = GoalGridWorldEnv(grid_size=5, max_step=50, grid_file=grid_file)
+    env = GoalGridWorldEnv(grid_size=5, max_step=40, grid_file=grid_file)
     if args.model_type == "mlp":
         policy = GridWorldMlpPolicy
     elif args.model_type == "cnn":
@@ -68,18 +68,19 @@ def main(args):
     model = DQN(
         env=env,
         policy=policy,
-        learning_rate=1e-4,
-        gamma=0.98,
-        learning_starts=1000,
+        learning_rate=1e-3,
+        gamma=0.97,
+        learning_starts=500,
         verbose=1,
+        train_freq=5,
         batch_size=128,
-        buffer_size=100000,
-        exploration_fraction=0.5,
-        exploration_final_eps=0.02,
-        target_network_update_frac=0.05,
+        buffer_size=200000,
+        exploration_fraction=0.8,
+        exploration_final_eps=0.1,
+        target_network_update_frac=0.02,
         target_network_update_freq=20,
         hindsight_mode=args.her,
-        hindsight_frac=0.6,
+        hindsight_frac=0.8,
         tensorboard_log="./dqn_goalgridworld_tensorboard/{}".format(args.room_file),
     )
     assert model.goal_space is not None

@@ -411,7 +411,7 @@ class SimpleRLModel(BaseRLModel):
 
         # Do the learning and fetch tensorboard summaries
         summaries = self._process_experience(obses, actions, rewards, new_obses, dones)
-        # Do some bookkeeping
+        # Do some bookkeepinggg
         if writer is not None and summaries:
           for summary in summaries:
             writer.add_summary(summary, self.global_step)
@@ -434,6 +434,8 @@ class SimpleRLModel(BaseRLModel):
             logger.record_tabular("steps", self.task_step)
             logger.record_tabular("episodes", num_episodes)
             logger.record_tabular("repl_buff_len", len(self.replay_buffer))
+            if hasattr(self, 'replay_buffer_hindsight') and self.replay_buffer_hindsight is not None:
+              logger.record_tabular("repl_buff_hindsight_len", len(self.replay_buffer_hindsight))
             logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
             if self.exploration:
               logger.record_tabular(

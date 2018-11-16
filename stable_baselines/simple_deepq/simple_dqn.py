@@ -6,7 +6,7 @@ import copy
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, HerFutureAchievedPastActual
 from itertools import chain
 
 class SimpleDQN(SimpleRLModel):
@@ -29,6 +29,8 @@ class SimpleDQN(SimpleRLModel):
 
     :param target_network_update_frac: (float) fraction by which to update the target network every time.
     :param target_network_update_freq: (int) update the target network every `target_network_update_freq` steps.
+
+    :param hindsight_mode: (str) e.g., "final", "none", "future_4"
 
     :param double_q: (bool) whether to use double q learning
     :param grad_norm_clipping: (float) amount of gradient norm clipping
@@ -269,9 +271,13 @@ class SimpleDQN(SimpleRLModel):
 
     if self.hindsight_mode == 'final':
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
-    elif isinstance(self.hindsight_mode, str) and 'future' in self.hindsight_mode:
+    elif isinstance(self.hindsight_mode, str) and 'future_' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
       self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+    elif isinstance(self.hindsight_mode,
+                    str) and 'futureactual_' in self.hindsight_mode:
+      _, k, p = self.hindsight_mode.split('_')
+      self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
     # elif isinstance(self.hindsight_mode, str) and 'landmark' in self.hindsight_mode:
     else:
       self.hindsight_fn = None

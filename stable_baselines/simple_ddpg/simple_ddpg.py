@@ -49,6 +49,8 @@ class SimpleDDPG(SimpleRLModel):
     :param target_network_update_frac: (float) fraction by which to update the target network every time.
     :param target_network_update_freq: (int) update the target network every `target_network_update_freq` steps.
 
+    :param hindsight_mode: (str) e.g., "final", "none", "future_4"
+    :param grad_norm_clipping: (float) amount of gradient norm clipping
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param tensorboard_log: (str) the log location for tensorboard (if None, no logging)
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
@@ -156,6 +158,7 @@ class SimpleDDPG(SimpleRLModel):
     self.target_network_update_freq = target_network_update_freq
 
     self.hindsight_mode = hindsight_mode
+    self.hindsight_frac = None
 
     self.grad_norm_clipping = grad_norm_clipping
     self.critic_l2_regularization = critic_l2_regularization
@@ -170,6 +173,7 @@ class SimpleDDPG(SimpleRLModel):
     self.global_step = 0
     self.task_step = 0
     self.replay_buffer = None
+    self.replay_buffer_hindsight = None
     self.exploration = None
 
     # Several additional props to be set in self._setup_model()
@@ -421,23 +425,18 @@ class SimpleDDPG(SimpleRLModel):
 
           tf.summary.scalar("actor_loss", mean_actor_loss)
 
+          total_loss = mean_critic_loss * self.critic_lr / self.actor_lr + mean_actor_loss
+
           # compute optimization op (potentially with gradient clipping)
-          actor_optimizer  = tf.train.AdamOptimizer(learning_rate=self.actor_lr)
-          critic_optimizer = tf.train.AdamOptimizer(learning_rate=self.critic_lr)
+          optimizer  = tf.train.AdamOptimizer(learning_rate=self.actor_lr)
 
-          actor_gradients  = actor_optimizer.compute_gradients(mean_actor_loss,  var_list=main_joint_tvars + actor_branch.trainable_vars)
-          critic_gradients = critic_optimizer.compute_gradients(mean_critic_loss, var_list=main_joint_tvars + critic_branch.trainable_vars)
+          gradients  = optimizer.compute_gradients(total_loss,  var_list=main_joint_tvars + actor_branch.trainable_vars + critic_branch.trainable_vars)
           if self.grad_norm_clipping is not None:
-            for i, (grad, var) in enumerate(actor_gradients):
+            for i, (grad, var) in enumerate(gradients):
               if grad is not None:
-                actor_gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping), var)
-            for i, (grad, var) in enumerate(critic_gradients):
-              if grad is not None:
-                critic_gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping), var)
+                gradients[i] = (tf.clip_by_norm(grad, self.grad_norm_clipping), var)
 
-          tsa = actor_optimizer.apply_gradients(actor_gradients)
-          tsc = critic_optimizer.apply_gradients(critic_gradients)
-          training_step = tf.group([tsa, tsc])
+          training_step = optimizer.apply_gradients(gradients)
 
         with tf.name_scope('update_target_network_ops'):
           init_target_network = []
@@ -499,17 +498,22 @@ class SimpleDDPG(SimpleRLModel):
                  self.env.observation_space.spaces['desired_goal'].shape)]
 
     self.replay_buffer = ReplayBuffer(self.buffer_size, items)
+    if self.hindsight_fn is not None:
+        self.replay_buffer_hindsight = ReplayBuffer(self.buffer_size, hindsight_items)
 
     if self.hindsight_mode == 'final':
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
+      self.hindsight_frac = 0.5
     elif isinstance(self.hindsight_mode,
                     str) and 'future_' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
       self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+      self.hindsight_frac = 1. - 1. / (1. + float(k))
     elif isinstance(self.hindsight_mode,
                     str) and 'futureactual_' in self.hindsight_mode:
       _, k, p = self.hindsight_mode.split('_')
       self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
+      self.hindsight_frac = 1. - 1. / (1. + float(k+p))
     else:
       self.hindsight_fn = None
 
