@@ -127,8 +127,10 @@ class ReplayBuffer(object):
     :param batch_size: (int) the number of element to sample for the batch
     :return: (list) the sampled batch
     """
+    if self.size==0:
+      return []
     # Draw such that we always have a proceeding element.
-    batch_idxs = np.random.randint(low=1, high=(self.size - 1), size=batch_size)
+    batch_idxs = np.random.randint(low=0, high=(self.size - 1), size=batch_size)
 
     transition = []
     for buf in self.items.values():
@@ -225,9 +227,14 @@ def her_final(trajectory, compute_reward):
       break
   return hindsight_trajectory
 
-def her_future(trajectory, k, compute_reward):
-  """produces hindsight experiences where desired_goal is replaced with future achieved_goals"""
+def her_future(trajectory, k, compute_reward, process_successful_trajectories=True):
+  """produces hindsight experiences where desired_goal is replaced with future achieved_goals
+  if short circuit is true, cuts of the end of the trajectory where the achieved goal does not move"""
+  final_achieved_goal = trajectory[-1][4]
+  if not process_successful_trajectories and np.allclose(final_achieved_goal, trajectory[-1][5]):
+    return [] # don't add successful trajectories twice
   achieved_goals = np.array([transition[4] for transition in trajectory])
+  
   len_ag = len(achieved_goals)
   achieved_goals_range = np.array(range(len_ag))
   hindsight_experiences = []
@@ -236,6 +243,22 @@ def her_future(trajectory, k, compute_reward):
     sampled_goals = achieved_goals[sampled_goals]
     for g in sampled_goals:
       reward = compute_reward(achieved_goal, g, None)
+      hindsight_experiences.append([o1, action, reward, o2, reward, g])
+  return hindsight_experiences
+
+def her_future_with_states(trajectory, k, compute_reward):
+  """produces hindsight experiences where desired_goal is replaced with future achieved_goals
+  if short circuit is true, cuts of the end of the trajectory where the achieved goal does not move"""
+  achieved_goals = np.array([transition[3] for transition in trajectory])
+  
+  len_ag = len(achieved_goals)
+  achieved_goals_range = np.array(range(len_ag))
+  hindsight_experiences = []
+  for i, (o1, action, _, o2, _, _) in enumerate(trajectory):
+    sampled_goals = np.random.choice(achieved_goals_range[i:], min(k, len_ag - i), replace=False)
+    sampled_goals = achieved_goals[sampled_goals]
+    for g in sampled_goals:
+      reward = compute_reward(o2, g, None)
       hindsight_experiences.append([o1, action, reward, o2, reward, g])
   return hindsight_experiences
 

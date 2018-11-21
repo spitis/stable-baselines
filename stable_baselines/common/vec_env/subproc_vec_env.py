@@ -71,6 +71,8 @@ class SubprocVecEnv(VecEnv):
           dummy_env = env_fns[0]()
           if dummy_env.compute_reward is not None:
             self.compute_reward = dummy_env.compute_reward
+          if dummy_env.goal_state_compute_reward is not None:
+            self.goal_state_compute_reward = dummy_env.goal_state_compute_reward
           self.goal_env = True
           self.goal_keys = tuple(observation_space.spaces.keys())
         VecEnv.__init__(self, len(env_fns), observation_space, action_space)

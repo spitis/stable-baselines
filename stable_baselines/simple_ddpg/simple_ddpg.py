@@ -2,10 +2,11 @@ import tensorflow as tf
 import numpy as np
 import gym
 import trfl
+import copy
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, HerFutureAchievedPastActual
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, her_future_with_states, HerFutureAchievedPastActual
 from stable_baselines.simple_ddpg.noise import OUNoiseTensorflow, NormalNoiseTensorflow
 from stable_baselines.common.policies import get_policy_from_name
 from itertools import chain
@@ -75,7 +76,7 @@ class SimpleDDPG(SimpleRLModel):
                observation_post_norm_range=(-5., 5.),
                goal_post_norm_range=None,
                clip_value_fn_range=None,
-               goal_to_prototype_state=False,
+               goal_to_prototype_state=None,
                action_noise='ou_0.2',
                epsilon_random_exploration=0.,
                param_noise=False,
@@ -137,9 +138,6 @@ class SimpleDDPG(SimpleRLModel):
     self.clip_value_fn_range = clip_value_fn_range
 
     self.goal_to_prototype_state = goal_to_prototype_state
-    if self.goal_to_prototype_state and self.goal_space is not None:
-      if self.goal_space == self.observation_space:
-        self.goal_to_prototype_state = False
 
     self.action_noise = action_noise
     self.action_noise_fn = None
@@ -158,7 +156,7 @@ class SimpleDDPG(SimpleRLModel):
     self.target_network_update_freq = target_network_update_freq
 
     self.hindsight_mode = hindsight_mode
-    self.hindsight_frac = None
+    self.hindsight_frac = 0.
 
     self.grad_norm_clipping = grad_norm_clipping
     self.critic_l2_regularization = critic_l2_regularization
@@ -215,8 +213,8 @@ class SimpleDDPG(SimpleRLModel):
               main_input, main_joint_tvars = self.joint_feature_extractor(
                   processed_x)
 
-            goal_phs = goal_ph = None
-            prototype = None
+            goal_phs = goal_ph = goal_or_goalstate_ph = None
+            goal_state_ph = None
             update_g_rms = tf.no_op()
             if self.goal_space is not None:
               with tf.variable_scope('feature_extraction', reuse=tf.AUTO_REUSE):
@@ -224,22 +222,35 @@ class SimpleDDPG(SimpleRLModel):
                     shape=(None,) + self.goal_space.shape,
                     dtype=self.goal_space.dtype,
                     name='goal_ph')
-                processed_g = rescale_obs_ph(
-                    tf.to_float(goal_ph), self.goal_space, self.rescale_goal)
-                processed_g = tf.clip_by_value(processed_g, self.goal_pre_norm_range[0], self.goal_pre_norm_range[1])
-                update_g_rms = self.g_rms.make_update_op(processed_g)
-                processed_g = normalize(processed_g, self.g_rms)
-                processed_g = tf.clip_by_value(processed_g, self.goal_post_norm_range[0], self.goal_post_norm_range[1])
 
-                if self.goal_to_prototype_state:
-                  prototype_map = tf.layers.Dense(self.observation_space.shape[-1])
-                  prototype, prototype_vars = prototype_map(processed_g)
-                  main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
-                      prototype)
-                  main_goal_joint_tvars += prototype_vars
+                if self.goal_to_prototype_state is None:
+                  processed_g = rescale_obs_ph(
+                      tf.to_float(goal_ph), self.goal_space, self.rescale_goal)
+                  processed_g = tf.clip_by_value(processed_g, self.goal_pre_norm_range[0], self.goal_pre_norm_range[1])
+                  update_g_rms = self.g_rms.make_update_op(processed_g)
+                  processed_g = normalize(processed_g, self.g_rms)
+                  processed_g = tf.clip_by_value(processed_g, self.goal_post_norm_range[0], self.goal_post_norm_range[1])
+
                 else:
-                  main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
-                      processed_g)
+                  goal_state_ph = tf.placeholder_with_default(
+                    tf.zeros(shape=(tf.shape(goal_ph)[0],) + ob_space.shape),
+                    shape=(None,) + ob_space.shape,
+                    name='goal_state_ph')
+                  prototype = self.goal_to_prototype_state(goal_ph)
+
+                  goal_or_goalstate_ph = tf.placeholder_with_default(tf.cast(tf.ones(shape=(tf.shape(goal_ph)[0],)), tf.bool), shape=(None,))
+                  unprocessed_g = tf.where(goal_or_goalstate_ph, prototype, goal_state_ph)
+
+
+                  processed_g = rescale_obs_ph(
+                      tf.to_float(unprocessed_g), ob_space, self.rescale_input)
+                  processed_g = tf.clip_by_value(processed_g, self.observation_pre_norm_range[0], self.observation_pre_norm_range[1])
+                  processed_g = normalize(processed_g, self.obs_rms)
+                  processed_g = tf.clip_by_value(processed_g, self.observation_post_norm_range[0], self.observation_post_norm_range[1])
+                  processed_g = tf.concat([processed_g, tf.expand_dims(tf.to_float(goal_or_goalstate_ph), -1)], -1)
+
+
+                main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(processed_g)
 
 
               main_joint_tvars = list(
@@ -329,15 +340,8 @@ class SimpleDDPG(SimpleRLModel):
             target_goal_phs = None
             if self.goal_space is not None:
               with tf.variable_scope('feature_extraction', reuse=tf.AUTO_REUSE):
-                if self.goal_to_prototype_state:
-                  prototype_map = tf.layers.Dense(self.observation_space.shape[-1])
-                  target_prototype, prototype_vars = prototype_map(processed_g)
-                  target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
-                      target_prototype)
-                  main_goal_joint_tvars += prototype_vars
-                else:
-                  target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
-                      processed_g)
+                target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
+                    processed_g)
 
               target_joint_tvars = list(
                   set(target_joint_tvars + main_goal_joint_tvars))
@@ -472,6 +476,8 @@ class SimpleDDPG(SimpleRLModel):
         self._obs2_ph = target_obs_ph
         self._dones_ph = done_mask_ph
         self._goal_ph = goal_ph
+        self._goal_state_ph = goal_state_ph
+        self._goal_or_goalstate_ph = goal_or_goalstate_ph
         self.update_target_network = update_target_network
         self.model = actor_branch
         self.target_model = target_actor_branch
@@ -489,25 +495,16 @@ class SimpleDDPG(SimpleRLModel):
     self.task_step = 0
     self.reset = np.ones([self.n_envs, 1])
 
-    items = [("observations0", self.observation_space.shape),
-             ("actions", self.action_space.shape), ("rewards", (1,)),
-             ("observations1", self.observation_space.shape), ("terminals1",
-                                                               (1,))]
-    if self.goal_space is not None:
-      items += [("desired_goal",
-                 self.env.observation_space.spaces['desired_goal'].shape)]
-
-    self.replay_buffer = ReplayBuffer(self.buffer_size, items)
-    if self.hindsight_fn is not None:
-        self.replay_buffer_hindsight = ReplayBuffer(self.buffer_size, hindsight_items)
-
     if self.hindsight_mode == 'final':
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
       self.hindsight_frac = 0.5
     elif isinstance(self.hindsight_mode,
                     str) and 'future_' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
-      self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+      if self.goal_to_prototype_state is not None:
+        self.hindsight_fn = lambda trajectory: her_future_with_states(trajectory, int(k), self.env.goal_state_compute_reward)
+      else:
+        self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
       self.hindsight_frac = 1. - 1. / (1. + float(k))
     elif isinstance(self.hindsight_mode,
                     str) and 'futureactual_' in self.hindsight_mode:
@@ -516,6 +513,28 @@ class SimpleDDPG(SimpleRLModel):
       self.hindsight_frac = 1. - 1. / (1. + float(k+p))
     else:
       self.hindsight_fn = None
+
+    items = [("observations0", self.observation_space.shape),
+             ("actions", self.action_space.shape), ("rewards", (1,)),
+             ("observations1", self.observation_space.shape), ("terminals1",
+                                                               (1,))]
+    
+    hindsight_items = copy.deepcopy(items)
+    
+    if self.goal_space is not None:
+      items += [("desired_goal",
+                self.env.observation_space.spaces['desired_goal'].shape)]
+      if self.goal_to_prototype_state is None:
+        hindsight_items += [("desired_goal",
+                self.env.observation_space.spaces['desired_goal'].shape)]
+      else:
+        hindsight_items += [("desired_goal",
+                 self.env.observation_space.spaces['observation'].shape)]
+
+
+    self.replay_buffer = ReplayBuffer(int((1-self.hindsight_frac) * self.buffer_size), items)
+    if self.hindsight_fn is not None:
+        self.replay_buffer_hindsight = ReplayBuffer(int(self.hindsight_frac * self.buffer_size), hindsight_items)
 
     self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn, n_cpus=min(self.n_envs, 8))
 
@@ -568,7 +587,7 @@ class SimpleDDPG(SimpleRLModel):
           if len(self.hindsight_subbuffer) == self.n_envs:
             for hindsight_experience in chain.from_iterable(
                 self.hindsight_subbuffer.process_trajectories()):
-              self.replay_buffer.add(*hindsight_experience)
+              self.replay_buffer_hindsight.add(*hindsight_experience)
             self.hindsight_subbuffer.clear_main_buffer()
 
     summaries = []
@@ -579,11 +598,40 @@ class SimpleDDPG(SimpleRLModel):
       if self.task_step > self.learning_starts:
         if self.task_step % self.train_freq == 0:
           if goal_agent:
-            obses_t, actions, rewards, obses_tp1, dones, desired_g =\
+            if self.replay_buffer_hindsight is not None and len(self.replay_buffer_hindsight) and self.hindsight_frac > 0.:
+                hindsight_batch_size = round(self.batch_size * self.hindsight_frac)
+                real_batch_size = self.batch_size - hindsight_batch_size
+
+                # Sample from real batch
+                obses_t, actions, rewards, obses_tp1, dones, desired_g = \
+                    self.replay_buffer.sample(real_batch_size)
+
+                # Sample from hindsight batch
+                obses_t_hs, actions_hs, rewards_hs, obses_tp1_hs, dones_hs, desired_g_hs =\
+                  self.replay_buffer_hindsight.sample(hindsight_batch_size)
+
+                # Concatenate the two
+                obses_t = np.concatenate([obses_t, obses_t_hs], 0)
+                actions = np.concatenate([actions, actions_hs], 0)
+                rewards = np.concatenate([rewards, rewards_hs], 0)
+                obses_tp1 = np.concatenate([obses_tp1, obses_tp1_hs], 0)
+                dones = np.concatenate([dones, dones_hs], 0)
+
+                if self.goal_to_prototype_state is None:
+                  desired_g = np.concatenate([desired_g, desired_g_hs], 0)
+
+                else:
+                  desired_g = np.pad(desired_g, ((0,hindsight_batch_size), (0,0)), 'constant')
+                  desired_g_hs = np.pad(desired_g_hs, ((real_batch_size, 0), (0,0)), 'constant')
+                  goal_or_goalstate = np.ones((real_batch_size + hindsight_batch_size,), np.bool)
+                  goal_or_goalstate[real_batch_size:] = False
+
+            else:
+              obses_t, actions, rewards, obses_tp1, dones, desired_g =\
                                                           self.replay_buffer.sample(self.batch_size)
+              desired_g_hs = None
           else:
-            obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(
-                self.batch_size)
+            obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
 
           rewards = np.squeeze(rewards, 1)
           dones = np.squeeze(dones, 1)
@@ -595,8 +643,13 @@ class SimpleDDPG(SimpleRLModel):
               self._obs2_ph: obses_tp1,
               self._dones_ph: dones,
           }
+
           if goal_agent:
             feed_dict[self._goal_ph] = desired_g
+
+            if self.goal_to_prototype_state and desired_g_hs is not None:
+              feed_dict[self._goal_state_ph] = desired_g_hs
+              feed_dict[self._goal_or_goalstate_ph] = goal_or_goalstate
 
           _, summary = self.sess.run(
               [self._train_step, self._summary_op], feed_dict=feed_dict)
@@ -658,6 +711,7 @@ class SimpleDDPG(SimpleRLModel):
         'goal_pre_norm_range':self.goal_pre_norm_range,
         'goal_post_norm_range':self.goal_post_norm_range,
         'clip_value_fn_range': self.clip_value_fn_range,
+        'goal_to_prototype_state': self.goal_to_prototype_state,
         'action_noise': self.action_noise,
         'epsilon_random_exploration': self.epsilon_random_exploration,
         "param_noise": self.param_noise,

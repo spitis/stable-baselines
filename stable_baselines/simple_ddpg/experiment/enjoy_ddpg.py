@@ -2,7 +2,7 @@ import argparse
 
 import gym
 from gym import wrappers
-from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv
+from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv, CustomFetchPushEnv6DimGoal
 
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG
 
@@ -12,13 +12,16 @@ def main(args):
 
     :param args: (ArgumentParser) the input arguments
     """
-    if "FetchReach" in args.env:
+
+    if args.env == "CustomFetchReach":
       env = CustomFetchReachEnv()
-    elif "FetchPush" in args.env:
+    elif args.env == "CustomFetchPush6Dim":
+      env = CustomFetchPushEnv6DimGoal()
+    elif args.env == "CustomFetchPush":
       env = CustomFetchPushEnv()
     else:
       env = gym.make(args.env)
-    model_filename = "ddpg_model_{}_{}.pkl".format(args.env, args.max_timesteps)
+    model_filename = args.checkpoint
     model = DDPG.load(model_filename, env)
 
     max_num_eps = 20
@@ -44,7 +47,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Enjoy trained DDPG")
     parser.add_argument('--env', default="FetchReach-v1", type=str, help="Gym environment")
+    parser.add_argument('--checkpoint', default="", type=str, help="Checkpoint file to load")
     parser.add_argument('--no-render', default=False, action="store_true", help="Disable rendering")
-    parser.add_argument('--max-timesteps', default=1000, type=int, help="Maximum number of timesteps")
     args = parser.parse_args()
     main(args)
