@@ -74,7 +74,8 @@ def main(args):
         joint_goal_feature_extractor=None,
         clip_value_fn_range=(0.,1.),
         goal_to_prototype_state=goal_to_prototype,
-        train_freq=20,
+        landmark_training=args.landmark_training,
+        train_freq=args.train_freq,
         target_network_update_frac=0.02,
         target_network_update_freq=40,
         epsilon_random_exploration=args.eexplore,
@@ -87,9 +88,9 @@ def main(args):
         hindsight_mode=args.her,
         tensorboard_log="{}/ddpg_tensorboard/".format(args.folder),
     )
-    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DDPG_{}_al2-{}_{}_eps-{}_{}".format(args.env, args.action_l2, args.action_noise, args.eexplore, args.tb), log_interval=10)
+    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DDPG_{}_landmark-{}_tf-{}_al2-{}_{}_eps-{}_{}".format(args.env, args.landmark_training, args.train_freq, args.action_l2, args.action_noise, args.eexplore, args.tb), log_interval=10)
 
-    model_filename = "ddpg_model_{}_{}_{}_{}.pkl".format(args.env, args.action_l2, args.action_noise, args.max_timesteps)
+    model_filename = "ddpg_model_{}_landmark-{}_tf-{}_{}_{}_{}.pkl".format(args.env, args.landmark_training, args.train_freq, args.action_l2, args.action_noise, args.max_timesteps)
     print("Saving model to {}".format(model_filename))
     model.save(model_filename)
 
@@ -110,6 +111,8 @@ if __name__ == '__main__':
     parser.add_argument('--action_l2', default=5e-3, type=float, help="action l2 norm")
     parser.add_argument('--action_noise', default='ou_0.2', type=str, help="action noise")
     parser.add_argument('--eexplore', default=0.2, type=float, help="epsilon exploration")
+    parser.add_argument('--landmark_training', default=0., type=float, help='landmark training coefficient')
+    parser.add_argument('--train_freq', default=10, type=int, help='how often to train')
     parser.set_defaults(g2p=False)
     args = parser.parse_args()
     main(args)

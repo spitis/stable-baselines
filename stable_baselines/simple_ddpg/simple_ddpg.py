@@ -77,6 +77,7 @@ class SimpleDDPG(SimpleRLModel):
                goal_post_norm_range=None,
                clip_value_fn_range=None,
                goal_to_prototype_state=None,
+               landmark_training=False,
                action_noise='ou_0.2',
                epsilon_random_exploration=0.,
                param_noise=False,
@@ -138,6 +139,7 @@ class SimpleDDPG(SimpleRLModel):
     self.clip_value_fn_range = clip_value_fn_range
 
     self.goal_to_prototype_state = goal_to_prototype_state
+    self.landmark_training = landmark_training
 
     self.action_noise = action_noise
     self.action_noise_fn = None
@@ -172,6 +174,7 @@ class SimpleDDPG(SimpleRLModel):
     self.task_step = 0
     self.replay_buffer = None
     self.replay_buffer_hindsight = None
+    self.state_buffer = None
     self.exploration = None
 
     # Several additional props to be set in self._setup_model()
@@ -213,7 +216,7 @@ class SimpleDDPG(SimpleRLModel):
               main_input, main_joint_tvars = self.joint_feature_extractor(
                   processed_x)
 
-            goal_phs = goal_ph = goal_or_goalstate_ph = None
+            goal_phs = goal_ph = goal_or_goalstate_ph = landmark_state_ph = landmark_goal_ph = None
             goal_state_ph = None
             update_g_rms = tf.no_op()
             if self.goal_space is not None:
@@ -252,6 +255,31 @@ class SimpleDDPG(SimpleRLModel):
 
                 main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(processed_g)
 
+              if self.landmark_training:
+                with tf.variable_scope('feature_extraction', reuse=True):
+                  landmark_state_ph = tf.placeholder(
+                    shape=(None,) + ob_space.shape,
+                    dtype=ob_space.dtype,
+                    name='landmark_state_ph')
+                  landmark_goal_ph  = tf.placeholder(
+                    shape=(None,) + self.goal_space.shape,
+                    dtype=self.goal_space.dtype,
+                    name='landmark_goal_ph')
+                  processed_l = rescale_obs_ph(
+                      tf.to_float(landmark_state_ph), ob_space, self.rescale_input)
+                  processed_l = tf.clip_by_value(processed_l, self.observation_pre_norm_range[0], self.observation_pre_norm_range[1])
+                  processed_l = normalize(processed_l, self.obs_rms)
+                  processed_l = tf.clip_by_value(processed_l, self.observation_post_norm_range[0], self.observation_post_norm_range[1])
+                      
+                  landmark_state, _ = self.joint_feature_extractor(processed_l)
+                  
+                  processed_lg = rescale_obs_ph(
+                      tf.to_float(landmark_goal_ph), self.goal_space, self.rescale_goal)
+                  processed_lg = tf.clip_by_value(processed_lg, self.goal_pre_norm_range[0], self.goal_pre_norm_range[1])
+                  processed_lg = normalize(processed_lg, self.g_rms)
+                  processed_lg = tf.clip_by_value(processed_lg, self.goal_post_norm_range[0], self.goal_post_norm_range[1])
+                      
+                  landmark_goal, _ = self.joint_feature_extractor(processed_lg)
 
               main_joint_tvars = list(
                   set(main_joint_tvars + main_goal_joint_tvars))
@@ -299,6 +327,50 @@ class SimpleDDPG(SimpleRLModel):
                   goal_phs=goal_phs,
                   goal_space=self.goal_space,
                   action_ph=actor_branch.policy)
+
+            if self.landmark_training:
+              # v(s, lg)
+
+              with tf.variable_scope('critic', reuse=True):
+                landmark_critic_s_lg = self.critic_policy(
+                  self.sess,
+                  ob_space,
+                  self.action_space,
+                  n_env=1,
+                  n_steps=1,
+                  n_batch=None,
+                  obs_phs=(obs_ph, main_input),
+                  goal_phs=(landmark_goal_ph, landmark_goal),
+                  goal_space=self.goal_space,
+                  action_ph=action_ph)
+
+              # v(l, g)
+
+              with tf.variable_scope('actor', reuse=True):
+                landmark_actor_l_g = self.actor_policy(
+                    self.sess,
+                    ob_space,
+                    self.action_space,
+                    n_env=1,
+                    n_steps=1,
+                    n_batch=None,
+                    obs_phs=(landmark_state_ph, landmark_state),
+                    goal_phs=goal_phs,
+                    goal_space=self.goal_space)
+
+              with tf.variable_scope('critic', reuse=True):
+                landmark_critic_l_g = self.critic_policy(
+                    self.sess,
+                    ob_space,
+                    self.action_space,
+                    n_env=1,
+                    n_steps=1,
+                    n_batch=None,
+                    obs_phs=(landmark_state_ph, landmark_state),
+                    goal_phs=goal_phs,
+                    goal_space=self.goal_space,
+                    action_ph=landmark_actor_l_g.policy)
+
 
             # ACTION TENSOR (WITH EXPLORATION / UPDATING RMS)
             if not self.param_noise:
@@ -408,6 +480,15 @@ class SimpleDDPG(SimpleRLModel):
                 tf.contrib.layers.l2_regularizer(self.critic_l2_regularization),
                 critic_branch.trainable_vars)
 
+          # landmark training
+          if self.landmark_training:
+            landmark_lower_bound = tf.stop_gradient(landmark_critic_s_lg.value_fn * landmark_critic_l_g.value_fn * self.gamma)
+            landmark_losses = tf.maximum(0., landmark_lower_bound - critic_branch.value_fn)
+            tf.summary.histogram('landmark_losses', landmark_losses)
+
+            mean_critic_loss += self.landmark_training * tf.reduce_mean(landmark_losses)
+
+
           tf.summary.scalar("critic_td_error",
                             tf.reduce_mean(loss_info.td_error))
           tf.summary.histogram("critic_td_error", loss_info.td_error)
@@ -478,6 +559,8 @@ class SimpleDDPG(SimpleRLModel):
         self._goal_ph = goal_ph
         self._goal_state_ph = goal_state_ph
         self._goal_or_goalstate_ph = goal_or_goalstate_ph
+        self._landmark_state_ph = landmark_state_ph
+        self._landmark_goal_ph = landmark_goal_ph
         self.update_target_network = update_target_network
         self.model = actor_branch
         self.target_model = target_actor_branch
@@ -524,6 +607,7 @@ class SimpleDDPG(SimpleRLModel):
     if self.goal_space is not None:
       items += [("desired_goal",
                 self.env.observation_space.spaces['desired_goal'].shape)]
+                
       if self.goal_to_prototype_state is None:
         hindsight_items += [("desired_goal",
                 self.env.observation_space.spaces['desired_goal'].shape)]
@@ -531,6 +615,10 @@ class SimpleDDPG(SimpleRLModel):
         hindsight_items += [("desired_goal",
                  self.env.observation_space.spaces['observation'].shape)]
 
+      if self.landmark_training:
+        self.state_buffer = ReplayBuffer(self.buffer_size, [
+          ("state", self.env.observation_space.spaces['observation'].shape), 
+          ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
 
     self.replay_buffer = ReplayBuffer(int((1-self.hindsight_frac) * self.buffer_size), items)
     if self.hindsight_fn is not None:
@@ -557,6 +645,7 @@ class SimpleDDPG(SimpleRLModel):
   def _process_experience(self, obs, action, rew, new_obs, done):
     """Called during training loop after action is taken; includes learning;
               returns a summary"""
+    
     expanded_done = np.expand_dims(done.astype(np.float32), 1)
     rew = np.expand_dims(rew, 1)
 
@@ -570,6 +659,10 @@ class SimpleDDPG(SimpleRLModel):
       self.replay_buffer.add_batch(obs['observation'], action, rew,
                                    new_obs['observation'], expanded_done,
                                    new_obs['desired_goal'])
+
+      if self.landmark_training:
+        self.state_buffer.add_batch(obs['observation'], obs['achieved_goal'])
+
     else:
       self.replay_buffer.add_batch(obs, action, rew, new_obs, expanded_done)
 
@@ -630,6 +723,11 @@ class SimpleDDPG(SimpleRLModel):
               obses_t, actions, rewards, obses_tp1, dones, desired_g =\
                                                           self.replay_buffer.sample(self.batch_size)
               desired_g_hs = None
+
+            if self.landmark_training:
+              landmark_states, landmark_goals = self.state_buffer.sample(self.batch_size)
+            
+
           else:
             obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
 
@@ -650,6 +748,10 @@ class SimpleDDPG(SimpleRLModel):
             if self.goal_to_prototype_state and desired_g_hs is not None:
               feed_dict[self._goal_state_ph] = desired_g_hs
               feed_dict[self._goal_or_goalstate_ph] = goal_or_goalstate
+
+            if self.landmark_training:
+              feed_dict[self._landmark_state_ph] = landmark_states
+              feed_dict[self._landmark_goal_ph] = landmark_goals
 
           _, summary = self.sess.run(
               [self._train_step, self._summary_op], feed_dict=feed_dict)
@@ -712,6 +814,7 @@ class SimpleDDPG(SimpleRLModel):
         'goal_post_norm_range':self.goal_post_norm_range,
         'clip_value_fn_range': self.clip_value_fn_range,
         'goal_to_prototype_state': self.goal_to_prototype_state,
+        'landmark_training': self.landmark_training,
         'action_noise': self.action_noise,
         'epsilon_random_exploration': self.epsilon_random_exploration,
         "param_noise": self.param_noise,
