@@ -400,7 +400,8 @@ class SimpleDDPG(SimpleRLModel):
           tf.summary.scalar("critic_td_error", tf.reduce_mean(loss_info.td_error))
           tf.summary.histogram("critic_td_error", loss_info.td_error)
           tf.summary.scalar("critic_loss", mean_critic_loss)
-          tf.summary.scalar("landmark_loss", mean_landmark_loss)
+          if self.landmark_training:
+            tf.summary.scalar("landmark_loss", mean_landmark_loss)
 
           #""" ACTOR LOSS """
 
@@ -418,7 +419,11 @@ class SimpleDDPG(SimpleRLModel):
 
           tf.summary.scalar("actor_loss", mean_actor_loss)
 
-          total_loss = (mean_critic_loss + mean_landmark_loss) * self.critic_lr / self.actor_lr + mean_actor_loss
+
+          if self.landmark_training:
+            total_loss = (mean_critic_loss + mean_landmark_loss) * self.critic_lr / self.actor_lr + mean_actor_loss
+          else:
+            total_loss = mean_critic_loss * self.critic_lr / self.actor_lr + mean_actor_loss
 
           # compute optimization op (potentially with gradient clipping)
           optimizer = tf.train.AdamOptimizer(learning_rate=self.actor_lr)

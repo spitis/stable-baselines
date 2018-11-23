@@ -417,7 +417,7 @@ class SimpleRLModel(BaseRLModel):
             writer.add_summary(summary, self.global_step)
             ep_rewards = np.expand_dims(rewards, 1)
             ep_dones = np.expand_dims(dones, 1)
-            tb_episode_rewards = total_episode_reward_logger(tb_episode_rewards, ep_rewards, ep_dones, writer, step)
+            tb_episode_rewards = total_episode_reward_logger(tb_episode_rewards, ep_rewards, ep_dones, writer, len(legacy_episode_rewards))
 
         legacy_episode_rewards_per_env += rewards
         for idx in np.argwhere(dones):
