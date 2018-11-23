@@ -5,6 +5,8 @@ Example usage:
 
 python train_goalgridworld.py --model-type cnn --max-timestep 5000 --her future_4 --room-file room_5x5_empty
 
+python train_goalgridworld.py --model-type cnn --max-timestep 10000 --her future_4 --room-file 2_room_9x9 --landmark-training 0.01
+
 """
 import argparse
 
@@ -72,7 +74,7 @@ def main(args):
         gamma=0.97,
         learning_starts=500,
         verbose=1,
-        train_freq=5,
+        train_freq=args.train_freq,
         batch_size=128,
         buffer_size=200000,
         exploration_fraction=0.8,
@@ -81,12 +83,15 @@ def main(args):
         target_network_update_freq=20,
         hindsight_mode=args.her,
         hindsight_frac=0.8,
+        landmark_training=args.landmark_training,
         tensorboard_log="./dqn_goalgridworld_tensorboard/{}".format(args.room_file),
     )
     assert model.goal_space is not None
-    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DQN_{}".format(args.her))
+    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DQN_her-{}_landmark-{}_{}".format(
+                      args.her, args.landmark_training, args.tb))
 
-    model_filename = "goalgridworld_model_{}_{}_{}.pkl".format(args.model_type, args.max_timesteps, args.room_file)
+    model_filename = "goalgridworld_model_model-{}_timestep-{}_room-{}_her-{}_landmark-{}.pkl".format(args.model_type, 
+                                                        args.max_timesteps, args.room_file, args.her, args.landmark_training)
     print("Saving model to {}".format(model_filename))
     model.save(model_filename)
 
@@ -100,5 +105,8 @@ if __name__ == '__main__':
     parser.add_argument('--her', default='none', type=str, help="HER type: final, future_k, none (default)")
     parser.add_argument('--room-file', default='room_5x5_empty', type=str,
                         help="Room type: room_5x5_empty (default), 2_room_9x9")
+    parser.add_argument('--landmark-training', default=0., type=float, help='landmark training coefficient')
+    parser.add_argument('--train-freq', default=10, type=int, help='how often to train')
+    parser.add_argument('--tb', default='1', type=str, help="Tensorboard_name")
     args = parser.parse_args()
     main(args)
