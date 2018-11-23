@@ -104,6 +104,8 @@ class BasePolicy(ABC):
                goal_phs=None, action_ph=None):
     self.n_env = n_env
     self.n_steps = n_steps
+    
+    self.scale = scale
 
     if layers is None:
       layers = [512]

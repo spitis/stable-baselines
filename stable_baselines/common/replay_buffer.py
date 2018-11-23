@@ -262,6 +262,11 @@ def her_future_with_states(trajectory, k, compute_reward):
       hindsight_experiences.append([o1, action, reward, o2, reward, g])
   return hindsight_experiences
 
+def her_landmark(trajectory, k, compute_reward):
+  """produces hindsight experiences where desired_goal is replaced with future achieved_goals,
+  and initial state is sampled from the states prior to the current state"""
+  return
+
 class HerFutureAchievedPastActual():
   def __init__(self, k, p, compute_reward, past_goal_memory=1000):
     self.k = k # future
