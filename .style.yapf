@@ -1,3 +1,4 @@
 [style]
 indent_width = 2
 column_limit = 120
+split_before_name_assigns = False

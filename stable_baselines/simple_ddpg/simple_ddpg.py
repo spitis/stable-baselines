@@ -36,8 +36,6 @@ class SimpleDDPG(SimpleRLModel):
     :param goal_post_norm_range: (tuple) range for goal clipping after normalization (if None, observation_post_norm_range)
     :param clip_value_fn_range: (tuple) range for value function target clipping
     
-    :param goal_to_prototype_state: (bool) whether to map the goal to prototype state and learn v(s, proto(g)) instead of v(s, g)
-
     :param action_noise: (str) the noises ('normal' or 'ou') to use 
     :param epsilon_random_exploration: (float) the episilon to use for random exploration
     :param param_noise: (bool) whether to use parameter noise (not supported)
@@ -76,8 +74,10 @@ class SimpleDDPG(SimpleRLModel):
                observation_post_norm_range=(-5., 5.),
                goal_post_norm_range=None,
                clip_value_fn_range=None,
-               goal_to_prototype_state=None,
                landmark_training=False,
+               landmark_mode='unidirectional',
+               landmark_training_per_batch=1,
+               landmark_width=1,
                action_noise='ou_0.2',
                epsilon_random_exploration=0.,
                param_noise=False,
@@ -95,8 +95,7 @@ class SimpleDDPG(SimpleRLModel):
                tensorboard_log=None,
                _init_setup_model=True):
 
-    super(SimpleDDPG, self).__init__(
-        policy=policy, env=env, verbose=verbose, requires_vec_env=True)
+    super(SimpleDDPG, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True)
 
     self.gamma = gamma
     self.actor_lr = actor_lr
@@ -138,8 +137,10 @@ class SimpleDDPG(SimpleRLModel):
 
     self.clip_value_fn_range = clip_value_fn_range
 
-    self.goal_to_prototype_state = goal_to_prototype_state
     self.landmark_training = landmark_training
+    self.landmark_mode = landmark_mode
+    self.landmark_training_per_batch = landmark_training_per_batch
+    self.landmark_width = landmark_width
 
     self.action_noise = action_noise
     self.action_noise_fn = None
@@ -190,202 +191,112 @@ class SimpleDDPG(SimpleRLModel):
       with self.graph.as_default():
         self.sess = tf_util.make_session(graph=self.graph)
         ob_space = self.observation_space
+        goal_space = self.goal_space
 
         with tf.variable_scope("ddpg"):
+
+          # input normalization statistics
           if self.normalize_input:
             with tf.variable_scope('obs_normalizer'):
-              self.obs_rms = RunningMeanStd(shape=self.observation_space.shape)
-            with tf.variable_scope('goal_normalizer'):
-              if self.goal_space is not None:
+              self.obs_rms = RunningMeanStd(shape=ob_space.shape)
+
+            if goal_space is not None:
+              with tf.variable_scope('goal_normalizer'):
                 self.g_rms = RunningMeanStd(shape=self.goal_space.shape)
 
           # main network
           with tf.variable_scope('main_network', reuse=False):
-            with tf.variable_scope('feature_extraction', reuse=False):
-              obs_ph = tf.placeholder(
-                  shape=(None,) + ob_space.shape,
-                  dtype=ob_space.dtype,
-                  name='obs_ph')
-              processed_x = rescale_obs_ph(
-                  tf.to_float(obs_ph), ob_space, self.rescale_input)
-              processed_x = tf.clip_by_value(processed_x, self.observation_pre_norm_range[0], self.observation_pre_norm_range[1])
-              update_obs_rms = self.obs_rms.make_update_op(processed_x)
-              processed_x = normalize(processed_x, self.obs_rms)
-              processed_x = tf.clip_by_value(processed_x, self.observation_post_norm_range[0], self.observation_post_norm_range[1])
-                  
-              main_input, main_joint_tvars = self.joint_feature_extractor(
-                  processed_x)
 
-            goal_phs = goal_ph = goal_or_goalstate_ph = landmark_state_ph = landmark_goal_ph = None
-            goal_state_ph = None
+            obs_ph, update_obs_rms, _, main_input, main_joint_tvars = feature_extractor(
+                reuse=False, space=ob_space, ph_name='obs_ph', rescale=self.rescale_input, 
+                rms=self.obs_rms, make_rms_update_op=True, pre_norm_range=self.observation_pre_norm_range, 
+                post_norm_range=self.observation_post_norm_range, joint_feature_extractor=self.joint_feature_extractor)
+
+            goal_phs = goal_ph = landmark_state_ph = landmark_goal_ph = None
             update_g_rms = tf.no_op()
+
             if self.goal_space is not None:
-              with tf.variable_scope('feature_extraction', reuse=tf.AUTO_REUSE):
-                goal_ph = tf.placeholder(
-                    shape=(None,) + self.goal_space.shape,
-                    dtype=self.goal_space.dtype,
-                    name='goal_ph')
+              goal_ph, update_g_rms, processed_g, main_goal, main_goal_joint_tvars = feature_extractor(
+                  reuse=tf.AUTO_REUSE, space=goal_space, ph_name='goal_ph', rescale=self.rescale_goal, 
+                  rms=self.g_rms, make_rms_update_op=True, pre_norm_range=self.goal_pre_norm_range, 
+                  post_norm_range=self.goal_post_norm_range, joint_feature_extractor=self.joint_goal_feature_extractor)
 
-                if self.goal_to_prototype_state is None:
-                  processed_g = rescale_obs_ph(
-                      tf.to_float(goal_ph), self.goal_space, self.rescale_goal)
-                  processed_g = tf.clip_by_value(processed_g, self.goal_pre_norm_range[0], self.goal_pre_norm_range[1])
-                  update_g_rms = self.g_rms.make_update_op(processed_g)
-                  processed_g = normalize(processed_g, self.g_rms)
-                  processed_g = tf.clip_by_value(processed_g, self.goal_post_norm_range[0], self.goal_post_norm_range[1])
-
-                else:
-                  goal_state_ph = tf.placeholder_with_default(
-                    tf.zeros(shape=(tf.shape(goal_ph)[0],) + ob_space.shape),
-                    shape=(None,) + ob_space.shape,
-                    name='goal_state_ph')
-                  prototype = self.goal_to_prototype_state(goal_ph)
-
-                  goal_or_goalstate_ph = tf.placeholder_with_default(tf.cast(tf.ones(shape=(tf.shape(goal_ph)[0],)), tf.bool), shape=(None,))
-                  unprocessed_g = tf.where(goal_or_goalstate_ph, prototype, goal_state_ph)
-
-
-                  processed_g = rescale_obs_ph(
-                      tf.to_float(unprocessed_g), ob_space, self.rescale_input)
-                  processed_g = tf.clip_by_value(processed_g, self.observation_pre_norm_range[0], self.observation_pre_norm_range[1])
-                  processed_g = normalize(processed_g, self.obs_rms)
-                  processed_g = tf.clip_by_value(processed_g, self.observation_post_norm_range[0], self.observation_post_norm_range[1])
-                  processed_g = tf.concat([processed_g, tf.expand_dims(tf.to_float(goal_or_goalstate_ph), -1)], -1)
-
-
-                main_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(processed_g)
-
-              if self.landmark_training:
-                with tf.variable_scope('feature_extraction', reuse=True):
-                  landmark_state_ph = tf.placeholder(
-                    shape=(None,) + ob_space.shape,
-                    dtype=ob_space.dtype,
-                    name='landmark_state_ph')
-                  landmark_goal_ph  = tf.placeholder(
-                    shape=(None,) + self.goal_space.shape,
-                    dtype=self.goal_space.dtype,
-                    name='landmark_goal_ph')
-                  processed_l = rescale_obs_ph(
-                      tf.to_float(landmark_state_ph), ob_space, self.rescale_input)
-                  processed_l = tf.clip_by_value(processed_l, self.observation_pre_norm_range[0], self.observation_pre_norm_range[1])
-                  processed_l = normalize(processed_l, self.obs_rms)
-                  processed_l = tf.clip_by_value(processed_l, self.observation_post_norm_range[0], self.observation_post_norm_range[1])
-                      
-                  landmark_state, _ = self.joint_feature_extractor(processed_l)
-                  
-                  processed_lg = rescale_obs_ph(
-                      tf.to_float(landmark_goal_ph), self.goal_space, self.rescale_goal)
-                  processed_lg = tf.clip_by_value(processed_lg, self.goal_pre_norm_range[0], self.goal_pre_norm_range[1])
-                  processed_lg = normalize(processed_lg, self.g_rms)
-                  processed_lg = tf.clip_by_value(processed_lg, self.goal_post_norm_range[0], self.goal_post_norm_range[1])
-                      
-                  landmark_goal, _ = self.joint_feature_extractor(processed_lg)
-
-              main_joint_tvars = list(
-                  set(main_joint_tvars + main_goal_joint_tvars))
+              main_joint_tvars = list(set(main_joint_tvars + main_goal_joint_tvars))
               goal_phs = (goal_ph, main_goal)
 
+              if self.landmark_training:
+                landmark_state_ph, _, _, landmark_state, _ = feature_extractor(
+                    reuse=True, space=ob_space, ph_name='landmark_state_ph', rescale=self.rescale_input, 
+                    rms=self.obs_rms, make_rms_update_op=False, pre_norm_range=self.observation_pre_norm_range, 
+                    post_norm_range=self.observation_post_norm_range, joint_feature_extractor=self.joint_feature_extractor)
+
+                landmark_goal_ph, _, _, landmark_goal, _ = feature_extractor(
+                    reuse=True, space=goal_space, ph_name='landmark_goal_ph', rescale=self.rescale_goal, 
+                    rms=self.g_rms, make_rms_update_op=False, pre_norm_range=self.goal_pre_norm_range, 
+                    post_norm_range=self.goal_post_norm_range, joint_feature_extractor=self.joint_goal_feature_extractor)
+
             action_ph = tf.placeholder(
-                shape=(None,) + self.action_space.shape,
-                dtype=self.action_space.dtype,
-                name='action_ph')
+                shape=(None, ) + self.action_space.shape, dtype=self.action_space.dtype, name='action_ph')
 
             with tf.variable_scope('actor', reuse=False):
               actor_branch = self.actor_policy(
-                  self.sess,
-                  ob_space,
-                  self.action_space,
-                  n_env=1,
-                  n_steps=1,
-                  n_batch=None,
-                  obs_phs=(obs_ph, main_input),
-                  goal_phs=goal_phs,
-                  goal_space=self.goal_space)
+                  self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(obs_ph, main_input), 
+                  goal_phs=goal_phs, goal_space=self.goal_space)
 
             with tf.variable_scope('critic', reuse=False):
               critic_branch = self.critic_policy(
-                  self.sess,
-                  ob_space,
-                  self.action_space,
-                  n_env=1,
-                  n_steps=1,
-                  n_batch=None,
-                  obs_phs=(obs_ph, main_input),
-                  goal_phs=goal_phs,
-                  goal_space=self.goal_space,
-                  action_ph=action_ph)
+                  self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(obs_ph, main_input), 
+                  goal_phs=goal_phs, goal_space=self.goal_space, action_ph=action_ph)
 
             with tf.variable_scope('critic', reuse=True):
               max_critic_branch = self.critic_policy(
-                  self.sess,
-                  ob_space,
-                  self.action_space,
-                  n_env=1,
-                  n_steps=1,
-                  n_batch=None,
-                  obs_phs=(obs_ph, main_input),
-                  goal_phs=goal_phs,
-                  goal_space=self.goal_space,
-                  action_ph=actor_branch.policy)
+                  self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(obs_ph, main_input), 
+                  goal_phs=goal_phs, goal_space=self.goal_space, action_ph=actor_branch.policy)
 
             if self.landmark_training:
-              # v(s, lg)
+              landmark_critics_s_lg = []
+              landmark_critics_l_g  = []
+              joined_landmark_state_and_goal = tf.concat([landmark_state, landmark_goal], axis=1)
+              
+              for _ in range(self.landmark_training_per_batch):
+                
+                landmark_state, landmark_goal = tf.split(joined_landmark_state_and_goal, (ob_space.shape[0], goal_space.shape[0]), 1)
+                joined_landmark_state_and_goal = tf.random_shuffle(joined_landmark_state_and_goal)
 
-              with tf.variable_scope('critic', reuse=True):
-                landmark_critic_s_lg = self.critic_policy(
-                  self.sess,
-                  ob_space,
-                  self.action_space,
-                  n_env=1,
-                  n_steps=1,
-                  n_batch=None,
-                  obs_phs=(obs_ph, main_input),
-                  goal_phs=(landmark_goal_ph, landmark_goal),
-                  goal_space=self.goal_space,
-                  action_ph=action_ph)
+                # v(s, lg)
 
-              # v(l, g)
+                with tf.variable_scope('critic', reuse=True):
+                  landmark_critic_s_lg = self.critic_policy(
+                      self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(obs_ph, main_input), 
+                      goal_phs=(landmark_goal_ph, landmark_goal), goal_space=self.goal_space, action_ph=action_ph)
+                  
+                landmark_critics_s_lg.append(landmark_critic_s_lg)
 
-              with tf.variable_scope('actor', reuse=True):
-                landmark_actor_l_g = self.actor_policy(
-                    self.sess,
-                    ob_space,
-                    self.action_space,
-                    n_env=1,
-                    n_steps=1,
-                    n_batch=None,
-                    obs_phs=(landmark_state_ph, landmark_state),
-                    goal_phs=goal_phs,
-                    goal_space=self.goal_space)
+                # v(l, g)
 
-              with tf.variable_scope('critic', reuse=True):
-                landmark_critic_l_g = self.critic_policy(
-                    self.sess,
-                    ob_space,
-                    self.action_space,
-                    n_env=1,
-                    n_steps=1,
-                    n_batch=None,
-                    obs_phs=(landmark_state_ph, landmark_state),
-                    goal_phs=goal_phs,
-                    goal_space=self.goal_space,
-                    action_ph=landmark_actor_l_g.policy)
+                with tf.variable_scope('actor', reuse=True):
+                  landmark_actor_l_g = self.actor_policy(
+                      self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(landmark_state_ph, 
+                      landmark_state), goal_phs=goal_phs, goal_space=self.goal_space)
 
+                with tf.variable_scope('critic', reuse=True):
+                  landmark_critic_l_g = self.critic_policy(
+                      self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(landmark_state_ph, 
+                      landmark_state), goal_phs=goal_phs, goal_space=self.goal_space, action_ph=landmark_actor_l_g.policy)
+
+                landmark_critics_l_g.append(landmark_critic_l_g)
 
             # ACTION TENSOR (WITH EXPLORATION / UPDATING RMS)
             if not self.param_noise:
               noise, sigma = self.action_noise.split('_')
               sigma = float(sigma)
-              if noise =='ou':
-                self.action_noise_fn = OUNoiseTensorflow(
-                    self.action_space.shape[-1],
-                    sigma=float(sigma))
-              elif noise =='normal':
+              if noise == 'ou':
+                self.action_noise_fn = OUNoiseTensorflow(self.action_space.shape[-1], sigma=float(sigma))
+              elif noise == 'normal':
                 self.action_noise_fn = NormalNoiseTensorflow(sigma=sigma)
               with tf.control_dependencies([update_obs_rms, update_g_rms]):
                 act = self.action_noise_fn(actor_branch.policy)
-                act = epsilon_exploration_wrapper_box(
-                    self.epsilon_random_exploration, self.action_space, act)
+                act = epsilon_exploration_wrapper_box(self.epsilon_random_exploration, self.action_space, act)
 
                 assert np.allclose(self.action_space.low, self.action_space.low[0])
                 assert np.allclose(self.action_space.high, self.action_space.high[0])
@@ -396,40 +307,30 @@ class SimpleDDPG(SimpleRLModel):
 
           # target network
           with tf.variable_scope('target_network', reuse=False):
-            with tf.variable_scope('feature_extraction', reuse=False):
-              target_obs_ph = tf.placeholder(
-                  shape=(None,) + ob_space.shape,
-                  dtype=ob_space.dtype,
-                  name='target_obs_ph')
-              processed_x = rescale_obs_ph(
-                  tf.to_float(target_obs_ph), ob_space, self.rescale_input)
-              processed_x = tf.clip_by_value(
-                  normalize(processed_x, self.obs_rms),
-                  self.observation_pre_norm_range[0], self.observation_pre_norm_range[1])
-              target_input, target_joint_tvars = self.joint_feature_extractor(
-                  processed_x)
+            target_obs_ph, _, _, target_input, target_joint_tvars = feature_extractor(
+                reuse=False,
+                space=ob_space,
+                ph_name='target_obs_ph',
+                rescale=self.rescale_input,
+                rms=self.obs_rms,
+                make_rms_update_op=False,
+                pre_norm_range=self.observation_pre_norm_range,
+                post_norm_range=self.observation_post_norm_range,
+                joint_feature_extractor=self.joint_feature_extractor)
 
             target_goal_phs = None
             if self.goal_space is not None:
               with tf.variable_scope('feature_extraction', reuse=tf.AUTO_REUSE):
-                target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(
-                    processed_g)
+                target_goal, main_goal_joint_tvars = self.joint_goal_feature_extractor(processed_g)
 
-              target_joint_tvars = list(
-                  set(target_joint_tvars + main_goal_joint_tvars))
+              target_joint_tvars = list(set(target_joint_tvars + main_goal_joint_tvars))
               target_goal_phs = (goal_ph, target_goal)
 
             with tf.variable_scope('actor', reuse=False):
               target_actor_branch = self.actor_policy(
-                  self.sess,
-                  ob_space,
-                  self.action_space,
-                  n_env=1,
-                  n_steps=1,
-                  n_batch=None,
-                  obs_phs=(target_obs_ph, target_input),
-                  goal_phs=target_goal_phs,
-                  goal_space=self.goal_space)
+                  self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None,
+                  obs_phs=(target_obs_ph, target_input), goal_phs=target_goal_phs, goal_space=self.goal_space)
+
             with tf.variable_scope('critic', reuse=False):
               target_critic_branch = self.critic_policy(
                   self.sess,
@@ -465,9 +366,7 @@ class SimpleDDPG(SimpleRLModel):
 
           # target q values based on 1-step bellman (no double q for ddpg)
           preds = tf.squeeze(critic_branch.value_fn, 1)
-          l2_loss, loss_info = trfl.td_learning(
-              preds, r_t, pcont_t,
-              tf.squeeze(target_critic_branch.value_fn, 1))
+          l2_loss, loss_info = trfl.td_learning(preds, r_t, pcont_t, tf.squeeze(target_critic_branch.value_fn, 1))
           tf_util.NOT_USED(l2_loss)
           targets = loss_info.target
           if self.clip_value_fn_range is not None:
@@ -477,45 +376,55 @@ class SimpleDDPG(SimpleRLModel):
           # add regularizer
           if self.critic_l2_regularization > 0.:
             mean_critic_loss += tf.contrib.layers.apply_regularization(
-                tf.contrib.layers.l2_regularizer(self.critic_l2_regularization),
-                critic_branch.trainable_vars)
+                tf.contrib.layers.l2_regularizer(self.critic_l2_regularization), critic_branch.trainable_vars)
 
           # landmark training
           if self.landmark_training:
-            landmark_lower_bound = tf.stop_gradient(landmark_critic_s_lg.value_fn * landmark_critic_l_g.value_fn * self.gamma)
-            landmark_losses = tf.maximum(0., landmark_lower_bound - critic_branch.value_fn)
+            landmark_losses = []
+            
+            for k in range(self.landmark_training_per_batch):
+              if self.landmark_mode == 'unidirectional':
+                landmark_lower_bound = tf.stop_gradient(
+                    landmark_critics_s_lg[k].value_fn * landmark_critics_l_g[k].value_fn * (self.gamma  ** self.landmark_width))
+              elif self.landmark_mode == 'bidirectional':
+                landmark_lower_bound = landmark_critics_s_lg[k].value_fn * landmark_critics_l_g[k].value_fn * (self.gamma  ** self.landmark_width)
+              else:
+                raise ValueError('landmark_mode must be one of "unidirectional" or "bidirectional"')
+              landmark_losses.append(tf.maximum(0., landmark_lower_bound - critic_branch.value_fn))
+            
+            landmark_losses = tf.concat(landmark_losses, 0)
             tf.summary.histogram('landmark_losses', landmark_losses)
 
-            mean_critic_loss += self.landmark_training * tf.reduce_mean(landmark_losses)
+            mean_landmark_loss = self.landmark_training * tf.reduce_mean(landmark_losses)
 
-
-          tf.summary.scalar("critic_td_error",
-                            tf.reduce_mean(loss_info.td_error))
+          tf.summary.scalar("critic_td_error", tf.reduce_mean(loss_info.td_error))
           tf.summary.histogram("critic_td_error", loss_info.td_error)
           tf.summary.scalar("critic_loss", mean_critic_loss)
+          tf.summary.scalar("landmark_loss", mean_landmark_loss)
 
           #""" ACTOR LOSS """
 
           a_max = actor_branch.policy
           q_max = tf.squeeze(max_critic_branch.value_fn, 1)
 
-          l2_loss, loss_info = trfl.dpg(
-              q_max, a_max, dqda_clipping=self.grad_norm_clipping)
+          l2_loss, loss_info = trfl.dpg(q_max, a_max, dqda_clipping=self.grad_norm_clipping)
           tf_util.NOT_USED(loss_info)
           mean_actor_loss = tf.reduce_mean(l2_loss)
 
           # add action norm regularizer
           if self.action_l2_regularization > 0.:
-            mean_actor_loss += self.action_l2_regularization * tf.reduce_mean(tf.square((actor_branch.unadjusted_policy - 0.5) * 2))
+            mean_actor_loss += self.action_l2_regularization * tf.reduce_mean(
+                tf.square((actor_branch.unadjusted_policy - 0.5) * 2))
 
           tf.summary.scalar("actor_loss", mean_actor_loss)
 
-          total_loss = mean_critic_loss * self.critic_lr / self.actor_lr + mean_actor_loss
+          total_loss = (mean_critic_loss + mean_landmark_loss) * self.critic_lr / self.actor_lr + mean_actor_loss
 
           # compute optimization op (potentially with gradient clipping)
-          optimizer  = tf.train.AdamOptimizer(learning_rate=self.actor_lr)
+          optimizer = tf.train.AdamOptimizer(learning_rate=self.actor_lr)
 
-          gradients  = optimizer.compute_gradients(total_loss,  var_list=main_joint_tvars + actor_branch.trainable_vars + critic_branch.trainable_vars)
+          gradients = optimizer.compute_gradients(
+              total_loss, var_list=main_joint_tvars + actor_branch.trainable_vars + critic_branch.trainable_vars)
           if self.grad_norm_clipping is not None:
             for i, (grad, var) in enumerate(gradients):
               if grad is not None:
@@ -527,8 +436,7 @@ class SimpleDDPG(SimpleRLModel):
           init_target_network = []
           update_target_network = []
           for var, var_target in zip(
-              sorted(main_vars, key=lambda v: v.name),
-              sorted(target_vars, key=lambda v: v.name)):
+              sorted(main_vars, key=lambda v: v.name), sorted(target_vars, key=lambda v: v.name)):
             new_target = self.target_network_update_frac       * var +\
                          (1 - self.target_network_update_frac) * var_target
             update_target_network.append(var_target.assign(new_target))
@@ -538,8 +446,8 @@ class SimpleDDPG(SimpleRLModel):
 
         with tf.variable_scope("input_info", reuse=False):
           for action_dim in range(self.action_space.shape[0]):
-            tf.summary.histogram('policy_dim_{}'.format(action_dim), a_max[:,action_dim])
-            tf.summary.histogram('explor_dim_{}'.format(action_dim), action_ph[:,action_dim])
+            tf.summary.histogram('policy_dim_{}'.format(action_dim), a_max[:, action_dim])
+            tf.summary.histogram('explor_dim_{}'.format(action_dim), action_ph[:, action_dim])
           tf.summary.histogram('targets', targets)
           tf.summary.scalar('rewards', tf.reduce_mean(r_t))
           tf.summary.histogram('rewards', r_t)
@@ -557,8 +465,6 @@ class SimpleDDPG(SimpleRLModel):
         self._obs2_ph = target_obs_ph
         self._dones_ph = done_mask_ph
         self._goal_ph = goal_ph
-        self._goal_state_ph = goal_state_ph
-        self._goal_or_goalstate_ph = goal_or_goalstate_ph
         self._landmark_state_ph = landmark_state_ph
         self._landmark_goal_ph = landmark_goal_ph
         self.update_target_network = update_target_network
@@ -581,48 +487,35 @@ class SimpleDDPG(SimpleRLModel):
     if self.hindsight_mode == 'final':
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
       self.hindsight_frac = 0.5
-    elif isinstance(self.hindsight_mode,
-                    str) and 'future_' in self.hindsight_mode:
+    elif isinstance(self.hindsight_mode, str) and 'future_' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
-      if self.goal_to_prototype_state is not None:
-        self.hindsight_fn = lambda trajectory: her_future_with_states(trajectory, int(k), self.env.goal_state_compute_reward)
-      else:
-        self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+      self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
       self.hindsight_frac = 1. - 1. / (1. + float(k))
-    elif isinstance(self.hindsight_mode,
-                    str) and 'futureactual_' in self.hindsight_mode:
+    elif isinstance(self.hindsight_mode, str) and 'futureactual_' in self.hindsight_mode:
       _, k, p = self.hindsight_mode.split('_')
       self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
-      self.hindsight_frac = 1. - 1. / (1. + float(k+p))
+      self.hindsight_frac = 1. - 1. / (1. + float(k + p))
     else:
       self.hindsight_fn = None
 
-    items = [("observations0", self.observation_space.shape),
-             ("actions", self.action_space.shape), ("rewards", (1,)),
-             ("observations1", self.observation_space.shape), ("terminals1",
-                                                               (1,))]
-    
+    items = [("observations0", self.observation_space.shape), ("actions", self.action_space.shape), ("rewards", (1, )),
+             ("observations1", self.observation_space.shape), ("terminals1", (1, ))]
+
     hindsight_items = copy.deepcopy(items)
-    
+
     if self.goal_space is not None:
-      items += [("desired_goal",
-                self.env.observation_space.spaces['desired_goal'].shape)]
-                
-      if self.goal_to_prototype_state is None:
-        hindsight_items += [("desired_goal",
-                self.env.observation_space.spaces['desired_goal'].shape)]
-      else:
-        hindsight_items += [("desired_goal",
-                 self.env.observation_space.spaces['observation'].shape)]
+      items += [("desired_goal", self.env.observation_space.spaces['desired_goal'].shape)]
+
+      hindsight_items += [("desired_goal", self.env.observation_space.spaces['desired_goal'].shape)]
 
       if self.landmark_training:
-        self.state_buffer = ReplayBuffer(self.buffer_size, [
-          ("state", self.env.observation_space.spaces['observation'].shape), 
-          ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
+        self.state_buffer = ReplayBuffer(self.buffer_size,
+                                         [("state", self.env.observation_space.spaces['observation'].shape),
+                                          ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
 
-    self.replay_buffer = ReplayBuffer(int((1-self.hindsight_frac) * self.buffer_size), items)
+    self.replay_buffer = ReplayBuffer(int((1 - self.hindsight_frac) * self.buffer_size), items)
     if self.hindsight_fn is not None:
-        self.replay_buffer_hindsight = ReplayBuffer(int(self.hindsight_frac * self.buffer_size), hindsight_items)
+      self.replay_buffer_hindsight = ReplayBuffer(int(self.hindsight_frac * self.buffer_size), hindsight_items)
 
     self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn, n_cpus=min(self.n_envs, 8))
 
@@ -645,7 +538,7 @@ class SimpleDDPG(SimpleRLModel):
   def _process_experience(self, obs, action, rew, new_obs, done):
     """Called during training loop after action is taken; includes learning;
               returns a summary"""
-    
+
     expanded_done = np.expand_dims(done.astype(np.float32), 1)
     rew = np.expand_dims(rew, 1)
 
@@ -656,8 +549,7 @@ class SimpleDDPG(SimpleRLModel):
 
     # Store transition in the replay buffer, and hindsight subbuffer
     if goal_agent:
-      self.replay_buffer.add_batch(obs['observation'], action, rew,
-                                   new_obs['observation'], expanded_done,
+      self.replay_buffer.add_batch(obs['observation'], action, rew, new_obs['observation'], expanded_done,
                                    new_obs['desired_goal'])
 
       if self.landmark_training:
@@ -670,16 +562,14 @@ class SimpleDDPG(SimpleRLModel):
       for idx in range(self.n_envs):
         # add the transition to the HER subbuffer for that worker
         self.hindsight_subbuffer.add_to_subbuffer(idx, [
-            obs['observation'][idx], action[idx], rew[idx],
-            new_obs['observation'][idx], new_obs['achieved_goal'][idx],
+            obs['observation'][idx], action[idx], rew[idx], new_obs['observation'][idx], new_obs['achieved_goal'][idx],
             new_obs['desired_goal'][idx]
         ])
         if done[idx]:
           # commit the subbuffer
           self.hindsight_subbuffer.commit_subbuffer(idx)
           if len(self.hindsight_subbuffer) == self.n_envs:
-            for hindsight_experience in chain.from_iterable(
-                self.hindsight_subbuffer.process_trajectories()):
+            for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.process_trajectories()):
               self.replay_buffer_hindsight.add(*hindsight_experience)
             self.hindsight_subbuffer.clear_main_buffer()
 
@@ -691,33 +581,27 @@ class SimpleDDPG(SimpleRLModel):
       if self.task_step > self.learning_starts:
         if self.task_step % self.train_freq == 0:
           if goal_agent:
-            if self.replay_buffer_hindsight is not None and len(self.replay_buffer_hindsight) and self.hindsight_frac > 0.:
-                hindsight_batch_size = round(self.batch_size * self.hindsight_frac)
-                real_batch_size = self.batch_size - hindsight_batch_size
+            if self.replay_buffer_hindsight is not None and len(
+                self.replay_buffer_hindsight) and self.hindsight_frac > 0.:
+              hindsight_batch_size = round(self.batch_size * self.hindsight_frac)
+              real_batch_size = self.batch_size - hindsight_batch_size
 
-                # Sample from real batch
-                obses_t, actions, rewards, obses_tp1, dones, desired_g = \
-                    self.replay_buffer.sample(real_batch_size)
+              # Sample from real batch
+              obses_t, actions, rewards, obses_tp1, dones, desired_g = \
+                  self.replay_buffer.sample(real_batch_size)
 
-                # Sample from hindsight batch
-                obses_t_hs, actions_hs, rewards_hs, obses_tp1_hs, dones_hs, desired_g_hs =\
-                  self.replay_buffer_hindsight.sample(hindsight_batch_size)
+              # Sample from hindsight batch
+              obses_t_hs, actions_hs, rewards_hs, obses_tp1_hs, dones_hs, desired_g_hs =\
+                self.replay_buffer_hindsight.sample(hindsight_batch_size)
 
-                # Concatenate the two
-                obses_t = np.concatenate([obses_t, obses_t_hs], 0)
-                actions = np.concatenate([actions, actions_hs], 0)
-                rewards = np.concatenate([rewards, rewards_hs], 0)
-                obses_tp1 = np.concatenate([obses_tp1, obses_tp1_hs], 0)
-                dones = np.concatenate([dones, dones_hs], 0)
+              # Concatenate the two
+              obses_t = np.concatenate([obses_t, obses_t_hs], 0)
+              actions = np.concatenate([actions, actions_hs], 0)
+              rewards = np.concatenate([rewards, rewards_hs], 0)
+              obses_tp1 = np.concatenate([obses_tp1, obses_tp1_hs], 0)
+              dones = np.concatenate([dones, dones_hs], 0)
 
-                if self.goal_to_prototype_state is None:
-                  desired_g = np.concatenate([desired_g, desired_g_hs], 0)
-
-                else:
-                  desired_g = np.pad(desired_g, ((0,hindsight_batch_size), (0,0)), 'constant')
-                  desired_g_hs = np.pad(desired_g_hs, ((real_batch_size, 0), (0,0)), 'constant')
-                  goal_or_goalstate = np.ones((real_batch_size + hindsight_batch_size,), np.bool)
-                  goal_or_goalstate[real_batch_size:] = False
+              desired_g = np.concatenate([desired_g, desired_g_hs], 0)
 
             else:
               obses_t, actions, rewards, obses_tp1, dones, desired_g =\
@@ -726,7 +610,6 @@ class SimpleDDPG(SimpleRLModel):
 
             if self.landmark_training:
               landmark_states, landmark_goals = self.state_buffer.sample(self.batch_size)
-            
 
           else:
             obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
@@ -745,16 +628,11 @@ class SimpleDDPG(SimpleRLModel):
           if goal_agent:
             feed_dict[self._goal_ph] = desired_g
 
-            if self.goal_to_prototype_state and desired_g_hs is not None:
-              feed_dict[self._goal_state_ph] = desired_g_hs
-              feed_dict[self._goal_or_goalstate_ph] = goal_or_goalstate
-
             if self.landmark_training:
               feed_dict[self._landmark_state_ph] = landmark_states
               feed_dict[self._landmark_goal_ph] = landmark_goals
 
-          _, summary = self.sess.run(
-              [self._train_step, self._summary_op], feed_dict=feed_dict)
+          _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
           summaries.append(summary)
 
         if self.task_step % self.target_network_update_freq == 0:
@@ -762,29 +640,20 @@ class SimpleDDPG(SimpleRLModel):
 
     return summaries
 
-  def predict(self,
-              observation,
-              state=None,
-              mask=None,
-              deterministic=True,
-              goal=None):
+  def predict(self, observation, state=None, mask=None, deterministic=True, goal=None):
     goal_agent = self.goal_space is not None
     if not goal_agent:
       observation = np.array(observation)
     else:
       desired_goal = np.array(observation['desired_goal'])
-      desired_goal = desired_goal.reshape((-1,) + self.goal_space.shape)
+      desired_goal = desired_goal.reshape((-1, ) + self.goal_space.shape)
       observation = np.array(observation['observation'])
 
-    vectorized_env = self._is_vectorized_observation(observation,
-                                                     self.observation_space)
-    observation = observation.reshape((-1,) + self.observation_space.shape)
+    vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
+    observation = observation.reshape((-1, ) + self.observation_space.shape)
 
     if goal_agent:
-      actions = self.sess.run(self.model.policy, {
-          self._obs1_ph: observation,
-          self._goal_ph: desired_goal
-      })
+      actions = self.sess.run(self.model.policy, {self._obs1_ph: observation, self._goal_ph: desired_goal})
     else:
       actions = self.sess.run(self.model.policy, {self._obs1_ph: observation})
 
@@ -804,17 +673,19 @@ class SimpleDDPG(SimpleRLModel):
         'critic_policy': self.critic_policy,
         'joint_feature_extractor': self.joint_feature_extractor,
         'joint_goal_feature_extractor': self.joint_goal_feature_extractor,
-        'rescale_input':self.rescale_input,
-        'rescale_goal':self.rescale_goal,
-        'normalize_input':self.normalize_input,
-        'normalize_goal':self.normalize_goal,
-        'observation_pre_norm_range':self.observation_pre_norm_range,
-        'observation_post_norm_range':self.observation_post_norm_range,
-        'goal_pre_norm_range':self.goal_pre_norm_range,
-        'goal_post_norm_range':self.goal_post_norm_range,
+        'rescale_input': self.rescale_input,
+        'rescale_goal': self.rescale_goal,
+        'normalize_input': self.normalize_input,
+        'normalize_goal': self.normalize_goal,
+        'observation_pre_norm_range': self.observation_pre_norm_range,
+        'observation_post_norm_range': self.observation_post_norm_range,
+        'goal_pre_norm_range': self.goal_pre_norm_range,
+        'goal_post_norm_range': self.goal_post_norm_range,
         'clip_value_fn_range': self.clip_value_fn_range,
-        'goal_to_prototype_state': self.goal_to_prototype_state,
         'landmark_training': self.landmark_training,
+        'landmark_mode': self.landmark_mode,
+        'landmark_training_per_batch': self.landmark_training_per_batch,
+        'landmark_width': self.landmark_width,
         'action_noise': self.action_noise,
         'epsilon_random_exploration': self.epsilon_random_exploration,
         "param_noise": self.param_noise,
@@ -861,6 +732,7 @@ def identity_extractor(input_tensor):
   trainable_variables = []
   return input_tensor, trainable_variables
 
+
 def make_feedforward_extractor(layers=[256], activation=tf.nn.relu, scope=None):
   def feed_forward_extractor(input_tensor):
     if scope is not None:
@@ -883,18 +755,35 @@ def make_feedforward_extractor(layers=[256], activation=tf.nn.relu, scope=None):
 
   return feed_forward_extractor
 
+
 def rescale_obs_ph(obs_ph, ob_space, rescale_input):
   processed_x = tf.to_float(obs_ph)
-  if (rescale_input and not np.any(np.isinf(ob_space.low)) and
-      not np.any(np.isinf(ob_space.high)) and
-      np.any((ob_space.high - ob_space.low) != 0)):
+  if (rescale_input and not np.any(np.isinf(ob_space.low)) and not np.any(np.isinf(ob_space.high))
+      and np.any((ob_space.high - ob_space.low) != 0)):
     # equivalent to processed_x / 255.0 when bounds are set to [0, 255]
     processed_x = ((obs_ph - ob_space.low) / (ob_space.high - ob_space.low))
   return processed_x
 
 
-class RunningMeanStd(object):
+def feature_extractor(reuse, space, ph_name, rescale, rms, make_rms_update_op, pre_norm_range, post_norm_range,
+                      joint_feature_extractor):
+  with tf.variable_scope('feature_extraction', reuse=reuse):
+    obs_ph = tf.placeholder(shape=(None, ) + space.shape, dtype=space.dtype, name=ph_name)
+    processed_x = rescale_obs_ph(tf.to_float(obs_ph), space, rescale)
+    processed_x = tf.clip_by_value(processed_x, pre_norm_range[0], pre_norm_range[1])
+    if make_rms_update_op is not None:
+      update_rms = rms.make_update_op(processed_x)
+    else:
+      update_rms = None
+    processed_x = normalize(processed_x, rms)
+    processed_x = tf.clip_by_value(processed_x, post_norm_range[0], post_norm_range[1])
 
+    ouput, joint_tvars = joint_feature_extractor(processed_x)
+
+    return obs_ph, update_rms, processed_x, ouput, joint_tvars
+
+
+class RunningMeanStd(object):
   def __init__(self, epsilon=1e-2, shape=()):
     """
         calulates the running mean and std of a data stream
@@ -904,11 +793,7 @@ class RunningMeanStd(object):
         :param shape: (tuple) the shape of the data stream's output
         """
     self._sum = tf.get_variable(
-        dtype=tf.float64,
-        shape=shape,
-        initializer=tf.constant_initializer(0.0),
-        name="runningsum",
-        trainable=False)
+        dtype=tf.float64, shape=shape, initializer=tf.constant_initializer(0.0), name="runningsum", trainable=False)
     self._sumsq = tf.get_variable(
         dtype=tf.float64,
         shape=shape,
@@ -916,18 +801,11 @@ class RunningMeanStd(object):
         name="runningsumsq",
         trainable=False)
     self._count = tf.get_variable(
-        dtype=tf.float64,
-        shape=(),
-        initializer=tf.constant_initializer(epsilon),
-        name="count",
-        trainable=False)
+        dtype=tf.float64, shape=(), initializer=tf.constant_initializer(epsilon), name="count", trainable=False)
     self.shape = shape
 
     self.mean = tf.to_float(self._sum / self._count)
-    self.std = tf.sqrt(
-        tf.maximum(
-            tf.to_float(self._sumsq / self._count) - tf.square(self.mean),
-            1e-2))
+    self.std = tf.sqrt(tf.maximum(tf.to_float(self._sumsq / self._count) - tf.square(self.mean), 1e-2))
 
   def make_update_op(self, batched_unnormalized_data):
     """
@@ -958,9 +836,6 @@ def epsilon_exploration_wrapper_box(epsilon, action_space, policy_action):
   high_as_batch = tf.expand_dims(action_space.high, 0)
 
   batch_size = tf.shape(policy_action)[0]
-  random_actions = tf.random_uniform(
-      tf.shape(policy_action)) * (high_as_batch - low_as_batch) + low_as_batch
-  chose_random = tf.random_uniform(
-      tf.stack([batch_size]), minval=0, maxval=1,
-      dtype=tf.float32) < epsilon
+  random_actions = tf.random_uniform(tf.shape(policy_action)) * (high_as_batch - low_as_batch) + low_as_batch
+  chose_random = tf.random_uniform(tf.stack([batch_size]), minval=0, maxval=1, dtype=tf.float32) < epsilon
   return tf.where(chose_random, random_actions, policy_action)
