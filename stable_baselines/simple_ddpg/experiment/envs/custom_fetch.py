@@ -95,7 +95,7 @@ class CustomFetchSlideEnv(FetchSlideEnv):
     # Compute distance between goal and the achieved goal.
     pos = goal_distance(achieved_goal[:3], goal[:3])
     speed = goal_distance(achieved_goal[3:6], goal[3:6])
-    return ((d <= self.pos_threshold) and (speed <= self.speed_threshold)).astype(np.float32)
+    return ((pos <= self.pos_threshold) and (speed <= self.speed_threshold)).astype(np.float32)
 
   def goal_extraction_function(self, batched_states):
     return batched_states[:,[3,4,5,14,15,16]]
@@ -182,12 +182,14 @@ class CustomFetchSlideEnv9DimGoal(FetchSlideEnv):
     super().__init__(reward_type='sparse')
     self.max_step = max_step
     self.num_step = 0
+    self.pos_threshold = pos_threshold
+    self.speed_threshold = speed_threshold
 
   def compute_reward(self, achieved_goal, goal, info):
     # Compute distance between goal and the achieved goal.
     pos = goal_distance(achieved_goal[:6], goal[:6])
     speed = goal_distance(achieved_goal[6:9], goal[6:9])
-    return ((d <= self.pos_threshold * np.sqrt(2)) and (speed <= self.speed_threshold)).astype(np.float32)
+    return ((pos <= self.pos_threshold * np.sqrt(2)) and (speed <= self.speed_threshold)).astype(np.float32)
 
   def goal_extraction_function(self, batched_states):
     return batched_states[:,[3,4,5,0,1,2,14,15,16]]

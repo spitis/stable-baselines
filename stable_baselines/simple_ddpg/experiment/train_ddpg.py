@@ -33,28 +33,28 @@ def main(args):
     """
 
     if args.env == "CustomFetchReach":
-      env_fn = lambda: CustomFetchReachEnv()
+      env_fn = lambda: lambda: CustomFetchReachEnv()
     elif args.env == "CustomFetchPush6Dim":
-      env_fn = lambda: CustomFetchPushEnv6DimGoal()
+      env_fn = lambda: lambda: CustomFetchPushEnv6DimGoal()
     elif args.env == "CustomFetchPush":
-      env_fn = CustomFetchPushEnv()
+      env_fn = lambda: lambda: CustomFetchPushEnv()
     elif args.env == "CustomFetchSlide9Dim":
-      env_fn = CustomFetchSlideEnv9DimGoal()
+      env_fn = lambda: lambda: CustomFetchSlideEnv9DimGoal()
     elif args.env == "CustomFetchSlide":
-      env_fn = CustomFetchSlideEnv()
+      env_fn = lambda: lambda: CustomFetchSlideEnv()
     elif "GoalGrid" in args.env:
       grid_file = "{}.txt".format(args.room_file)
-      env_fn = discrete_to_box_wrapper(GoalGridWorldEnv(grid_size=5, max_step=50, grid_file=grid_file))
+      env_fn = lambda: discrete_to_box_wrapper(GoalGridWorldEnv(grid_size=5, max_step=50, grid_file=grid_file))
     else:
-      env_fn = gym.make(args.env)
+      env_fn = lambda: gym.make(args.env)
 
-    env = SubprocVecEnv([env_fn for _ in range(12)])
+    env = SubprocVecEnv([env_fn() for _ in range(12)])
     if not args.folder:
       args.folder = '/tmp'
 
     landmark_generator = None
     if args.landmark_training:
-      landmark_generator = RandomLandmarkGenerator(100000, env_fn())
+      landmark_generator = RandomLandmarkGenerator(100000, env_fn()())
 
     model = DDPG(
         env=env,
