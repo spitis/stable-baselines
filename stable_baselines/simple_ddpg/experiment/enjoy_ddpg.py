@@ -2,7 +2,7 @@ import argparse
 
 import gym
 from gym import wrappers
-from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv, CustomFetchPushEnv6DimGoal
+from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv, CustomFetchPushEnv6DimGoal, CustomFetchSlideEnv, CustomFetchSlideEnv9DimGoal
 
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG
 
@@ -19,6 +19,10 @@ def main(args):
       env = CustomFetchPushEnv6DimGoal()
     elif args.env == "CustomFetchPush":
       env = CustomFetchPushEnv()
+    elif args.env == "CustomFetchSlide":
+      env = CustomFetchSlideEnv()
+    elif args.env == "CustomFetchSlide9Dim":
+      env = CustomFetchSlideEnv9DimGoal()
     else:
       env = gym.make(args.env)
     model_filename = args.checkpoint

@@ -3,10 +3,12 @@ import numpy as np
 import gym
 import trfl
 import copy
+from types import FunctionType
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
 from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, her_future_with_states, HerFutureAchievedPastActual
+from stable_baselines.common.landmark_generator import AbstractLandmarkGenerator
 from stable_baselines.simple_ddpg.noise import OUNoiseTensorflow, NormalNoiseTensorflow
 from stable_baselines.common.policies import get_policy_from_name
 from itertools import chain
@@ -55,45 +57,14 @@ class SimpleDDPG(SimpleRLModel):
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
     """
 
-  def __init__(self,
-               policy,
-               env,
-               gamma=0.99,
-               actor_lr=1e-4,
-               critic_lr=1e-3,
-               *,
-               critic_policy=None,
-               joint_feature_extractor=None,
-               joint_goal_feature_extractor=None,
-               rescale_input=False,
-               rescale_goal=None,
-               normalize_input=True,
-               normalize_goal=None,
-               observation_pre_norm_range=(-200., 200.),
-               goal_pre_norm_range=None,
-               observation_post_norm_range=(-5., 5.),
-               goal_post_norm_range=None,
-               clip_value_fn_range=None,
-               landmark_training=False,
-               landmark_mode='unidirectional',
-               landmark_training_per_batch=1,
-               landmark_width=1,
-               action_noise='ou_0.2',
-               epsilon_random_exploration=0.,
-               param_noise=False,
-               buffer_size=50000,
-               train_freq=1,
-               batch_size=32,
-               learning_starts=1000,
-               target_network_update_frac=0.001,
-               target_network_update_freq=1,
-               hindsight_mode=None,
-               grad_norm_clipping=10.,
-               critic_l2_regularization=1e-2,
-               action_l2_regularization=0.,
-               verbose=0,
-               tensorboard_log=None,
-               _init_setup_model=True):
+  def __init__(self, policy, env, gamma=0.99, actor_lr=1e-4, critic_lr=1e-3, *, critic_policy=None, joint_feature_extractor=None, 
+               joint_goal_feature_extractor=None, rescale_input=False, rescale_goal=None, normalize_input=True, normalize_goal=None, 
+               observation_pre_norm_range=(-200., 200.), goal_pre_norm_range=None, observation_post_norm_range=(-5., 5.), 
+               goal_post_norm_range=None, clip_value_fn_range=None, landmark_training=False, landmark_mode='unidirectional', 
+               landmark_training_per_batch=1, landmark_width=1, landmark_generator=None, action_noise='ou_0.2', 
+               epsilon_random_exploration=0., param_noise=False, buffer_size=50000, train_freq=1, batch_size=32, learning_starts=1000, 
+               target_network_update_frac=0.001, target_network_update_freq=1, hindsight_mode=None, grad_norm_clipping=10.,
+               critic_l2_regularization=1e-2, action_l2_regularization=0., verbose=0, tensorboard_log=None, _init_setup_model=True):
 
     super(SimpleDDPG, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True)
 
@@ -141,7 +112,8 @@ class SimpleDDPG(SimpleRLModel):
     self.landmark_mode = landmark_mode
     self.landmark_training_per_batch = landmark_training_per_batch
     self.landmark_width = landmark_width
-
+    self.landmark_generator = landmark_generator
+    
     self.action_noise = action_noise
     self.action_noise_fn = None
     self.epsilon_random_exploration = epsilon_random_exploration
@@ -190,8 +162,7 @@ class SimpleDDPG(SimpleRLModel):
       self.graph = tf.Graph()
       with self.graph.as_default():
         self.sess = tf_util.make_session(graph=self.graph)
-        ob_space = self.observation_space
-        goal_space = self.goal_space
+        ob_space, goal_space = self.observation_space, self.goal_space
 
         with tf.variable_scope("ddpg"):
 
@@ -207,6 +178,7 @@ class SimpleDDPG(SimpleRLModel):
           # main network
           with tf.variable_scope('main_network', reuse=False):
 
+            # main network placeholder/joint feature extraction
             obs_ph, update_obs_rms, _, main_input, main_joint_tvars = feature_extractor(
                 reuse=False, space=ob_space, ph_name='obs_ph', rescale=self.rescale_input, 
                 rms=self.obs_rms, make_rms_update_op=True, pre_norm_range=self.observation_pre_norm_range, 
@@ -215,6 +187,7 @@ class SimpleDDPG(SimpleRLModel):
             goal_phs = goal_ph = landmark_state_ph = landmark_goal_ph = None
             update_g_rms = tf.no_op()
 
+            # main network goal placeholder/joint feature extraction
             if self.goal_space is not None:
               goal_ph, update_g_rms, processed_g, main_goal, main_goal_joint_tvars = feature_extractor(
                   reuse=tf.AUTO_REUSE, space=goal_space, ph_name='goal_ph', rescale=self.rescale_goal, 
@@ -238,6 +211,7 @@ class SimpleDDPG(SimpleRLModel):
             action_ph = tf.placeholder(
                 shape=(None, ) + self.action_space.shape, dtype=self.action_space.dtype, name='action_ph')
 
+            # main network actor / critic branches
             with tf.variable_scope('actor', reuse=False):
               actor_branch = self.actor_policy(
                   self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(obs_ph, main_input), 
@@ -253,15 +227,20 @@ class SimpleDDPG(SimpleRLModel):
                   self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(obs_ph, main_input), 
                   goal_phs=goal_phs, goal_space=self.goal_space, action_ph=actor_branch.policy)
 
+            # landmark bound components
             if self.landmark_training:
               landmark_critics_s_lg = []
               landmark_critics_l_g  = []
               joined_landmark_state_and_goal = tf.concat([landmark_state, landmark_goal], axis=1)
               
-              for _ in range(self.landmark_training_per_batch):
+              for k in range(self.landmark_training_per_batch):
                 
-                landmark_state, landmark_goal = tf.split(joined_landmark_state_and_goal, (ob_space.shape[0], goal_space.shape[0]), 1)
-                joined_landmark_state_and_goal = tf.random_shuffle(joined_landmark_state_and_goal)
+                if k > 1:
+                  shuffled_landmark_state_and_goal = tf.random_shuffle(joined_landmark_state_and_goal)
+                else:
+                  shuffled_landmark_state_and_goal = joined_landmark_state_and_goal
+
+                landmark_state, landmark_goal = tf.split(shuffled_landmark_state_and_goal, (ob_space.shape[0], goal_space.shape[0]), 1)
 
                 # v(s, lg)
 
@@ -282,11 +261,11 @@ class SimpleDDPG(SimpleRLModel):
                 with tf.variable_scope('critic', reuse=True):
                   landmark_critic_l_g = self.critic_policy(
                       self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None, obs_phs=(landmark_state_ph, 
-                      landmark_state), goal_phs=goal_phs, goal_space=self.goal_space, action_ph=landmark_actor_l_g.policy)
+                      landmark_state), goal_phs=goal_phs, goal_space=self.goal_space, action_ph=tf.stop_gradient(landmark_actor_l_g.policy))
 
                 landmark_critics_l_g.append(landmark_critic_l_g)
 
-            # ACTION TENSOR (WITH EXPLORATION / UPDATING RMS)
+            # exploratory action computation (and normalization statistic collection)
             if not self.param_noise:
               noise, sigma = self.action_noise.split('_')
               sigma = float(sigma)
@@ -305,7 +284,7 @@ class SimpleDDPG(SimpleRLModel):
             else:
               raise NotImplementedError('param_noise to be added later')
 
-          # target network
+          # target network placeholders & feature extraction
           with tf.variable_scope('target_network', reuse=False):
             target_obs_ph, _, _, target_input, target_joint_tvars = feature_extractor(
                 reuse=False,
@@ -326,6 +305,7 @@ class SimpleDDPG(SimpleRLModel):
               target_joint_tvars = list(set(target_joint_tvars + main_goal_joint_tvars))
               target_goal_phs = (goal_ph, target_goal)
 
+            # target network actor/critic branches
             with tf.variable_scope('actor', reuse=False):
               target_actor_branch = self.actor_policy(
                   self.sess, ob_space, self.action_space, n_env=1, n_steps=1, n_batch=None,
@@ -344,14 +324,12 @@ class SimpleDDPG(SimpleRLModel):
                   goal_space=self.goal_space,
                   action_ph=target_actor_branch.policy)
 
-        # variables for main and target networks
-        main_vars = main_joint_tvars + actor_branch.trainable_vars + critic_branch.trainable_vars
-        target_vars = target_joint_tvars + target_actor_branch.trainable_vars +\
-                      target_critic_branch.trainable_vars
+          # variables for main and target networks
+          main_vars = main_joint_tvars + actor_branch.trainable_vars + critic_branch.trainable_vars
+          target_vars = target_joint_tvars + target_actor_branch.trainable_vars +\
+                        target_critic_branch.trainable_vars
 
         with tf.variable_scope("loss"):
-
-          # note: naming conventions from trfl (see https://github.com/deepmind/trfl/blob/master/docs/index.md)
 
           #""" CRITIC LOSS """
 
@@ -379,6 +357,7 @@ class SimpleDDPG(SimpleRLModel):
                 tf.contrib.layers.l2_regularizer(self.critic_l2_regularization), critic_branch.trainable_vars)
 
           # landmark training
+          landmark_scores = None
           if self.landmark_training:
             landmark_losses = []
             
@@ -391,7 +370,9 @@ class SimpleDDPG(SimpleRLModel):
               else:
                 raise ValueError('landmark_mode must be one of "unidirectional" or "bidirectional"')
               landmark_losses.append(tf.maximum(0., landmark_lower_bound - critic_branch.value_fn))
-            
+              if k == 0:
+                landmark_scores = landmark_lower_bound / critic_branch.value_fn
+                
             landmark_losses = tf.concat(landmark_losses, 0)
             tf.summary.histogram('landmark_losses', landmark_losses)
 
@@ -424,6 +405,8 @@ class SimpleDDPG(SimpleRLModel):
             total_loss = (mean_critic_loss + mean_landmark_loss) * self.critic_lr / self.actor_lr + mean_actor_loss
           else:
             total_loss = mean_critic_loss * self.critic_lr / self.actor_lr + mean_actor_loss
+
+        with tf.variable_scope("optimization"):
 
           # compute optimization op (potentially with gradient clipping)
           optimizer = tf.train.AdamOptimizer(learning_rate=self.actor_lr)
@@ -461,28 +444,31 @@ class SimpleDDPG(SimpleRLModel):
           else:
             tf.summary.histogram('observation', obs_ph)
 
-        self._act = act
-        self._train_step = training_step
-        self._summary_op = tf.summary.merge_all()
-        self._obs1_ph = obs_ph
-        self._action_ph = action_ph
-        self._reward_ph = r_t
-        self._obs2_ph = target_obs_ph
-        self._dones_ph = done_mask_ph
-        self._goal_ph = goal_ph
-        self._landmark_state_ph = landmark_state_ph
-        self._landmark_goal_ph = landmark_goal_ph
-        self.update_target_network = update_target_network
-        self.model = actor_branch
-        self.target_model = target_actor_branch
+        with tf_util.COMMENT("attribute assignments:"):
+          self._act = act
+          self._train_step = training_step
+          self._summary_op = tf.summary.merge_all()
+          self._obs1_ph = obs_ph
+          self._action_ph = action_ph
+          self._reward_ph = r_t
+          self._obs2_ph = target_obs_ph
+          self._dones_ph = done_mask_ph
+          self._goal_ph = goal_ph
+          self._landmark_state_ph = landmark_state_ph
+          self._landmark_goal_ph = landmark_goal_ph
+          self._landmark_scores = landmark_scores
+          self.update_target_network = update_target_network
+          self.model = actor_branch
+          self.target_model = target_actor_branch
 
-        self.params = tf.global_variables("ddpg")
+          self.params = tf.global_variables("ddpg")
 
-        # Initialize the parameters and copy them to the target network.
-        tf_util.initialize(self.sess)
-        self.sess.run(init_target_network)
+        with tf_util.COMMENT("graph initialization"):
+          # Initialize the parameters and copy them to the target network.
+          tf_util.initialize(self.sess)
+          self.sess.run(init_target_network)
 
-        self.summary = tf.summary.merge_all()
+          self.summary = tf.summary.merge_all()
 
   def _setup_new_task(self, total_timesteps):
     """Sets up new task by reinitializing step, replay buffer, and exploration schedule"""
@@ -514,9 +500,14 @@ class SimpleDDPG(SimpleRLModel):
       hindsight_items += [("desired_goal", self.env.observation_space.spaces['desired_goal'].shape)]
 
       if self.landmark_training:
-        self.state_buffer = ReplayBuffer(self.buffer_size,
-                                         [("state", self.env.observation_space.spaces['observation'].shape),
-                                          ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
+        if isinstance(self.landmark_generator, FunctionType):
+          self.landmark_generator = self.landmark_generator(self.buffer_size, self.env)
+        elif self.landmark_generator is None:
+          self.state_buffer = ReplayBuffer(self.buffer_size,
+                                        [("state", self.env.observation_space.spaces['observation'].shape),
+                                        ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
+        else:
+          assert isinstance(self.landmark_generator, AbstractLandmarkGenerator)
 
     self.replay_buffer = ReplayBuffer(int((1 - self.hindsight_frac) * self.buffer_size), items)
     if self.hindsight_fn is not None:
@@ -558,7 +549,10 @@ class SimpleDDPG(SimpleRLModel):
                                    new_obs['desired_goal'])
 
       if self.landmark_training:
-        self.state_buffer.add_batch(obs['observation'], obs['achieved_goal'])
+        if self.landmark_generator is not None:
+          self.landmark_generator.add_state_data(obs['observation'], obs['achieved_goal'])
+        else:
+          self.state_buffer.add_batch(obs['observation'], obs['achieved_goal'])
 
     else:
       self.replay_buffer.add_batch(obs, action, rew, new_obs, expanded_done)
@@ -614,7 +608,10 @@ class SimpleDDPG(SimpleRLModel):
               desired_g_hs = None
 
             if self.landmark_training:
-              landmark_states, landmark_goals = self.state_buffer.sample(self.batch_size)
+              if self.landmark_generator is not None:
+                landmark_states, landmark_goals = self.landmark_generator.generate(obses_t, desired_g)
+              else:
+                landmark_states, landmark_goals = self.state_buffer.sample(self.batch_size)
 
           else:
             obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
@@ -637,7 +634,13 @@ class SimpleDDPG(SimpleRLModel):
               feed_dict[self._landmark_state_ph] = landmark_states
               feed_dict[self._landmark_goal_ph] = landmark_goals
 
-          _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
+          if self.landmark_generator is not None:
+            _, landmark_scores, summary = self.sess.run([self._train_step, self._landmark_scores, self._summary_op], 
+              feed_dict=feed_dict)
+            self.landmark_generator.assign_scores(landmark_scores)
+
+          else:
+            _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
           summaries.append(summary)
 
         if self.task_step % self.target_network_update_freq == 0:
@@ -691,6 +694,7 @@ class SimpleDDPG(SimpleRLModel):
         'landmark_mode': self.landmark_mode,
         'landmark_training_per_batch': self.landmark_training_per_batch,
         'landmark_width': self.landmark_width,
+        'landmark_generator': self.landmark_generator,
         'action_noise': self.action_noise,
         'epsilon_random_exploration': self.epsilon_random_exploration,
         "param_noise": self.param_noise,

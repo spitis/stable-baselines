@@ -26,8 +26,8 @@ class DummyVecEnv(VecEnv):
             subspaces = obs_space.spaces 
             if env.compute_reward is not None:
               self.compute_reward = env.compute_reward
-            if env.goal_state_compute_reward is not None:
-              self.goal_state_compute_reward = env.goal_state_compute_reward
+            if env.goal_extraction_function is not None:
+              self.goal_extraction_function = env.goal_extraction_function
         else:
             subspaces = {None: obs_space}
 

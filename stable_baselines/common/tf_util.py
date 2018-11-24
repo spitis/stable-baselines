@@ -37,6 +37,18 @@ def switch(condition, then_expression, else_expression):
 def NOT_USED(*args):
   pass # do nothing
 
+class COMMENT():
+  """Does nothing with arbitrary arguments"""
+
+  def __init__(self, *args):
+    pass
+
+  def __enter__(self):
+    pass
+  
+  def __exit__(self ,type, value, traceback):
+    pass
+
 def leaky_relu(tensor, leak=0.2):
     """
     Leaky ReLU
