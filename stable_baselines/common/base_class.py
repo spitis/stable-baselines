@@ -58,6 +58,8 @@ class BaseRLModel(ABC):
     self.global_step = None
     self.graph = None
     self.tensorboard_log = None
+    self.eval_env = None
+    self.eval_every = 10
 
     if env is not None:
       if isinstance(env, str):
@@ -380,6 +382,22 @@ class SimpleRLModel(BaseRLModel):
   def _process_experience(self, obs, action, rew, new_obs, done):
     pass
 
+  def evaluate(self, n_episodes):
+    """evaluates model for n_episodes"""
+    env = self.eval_env
+    assert env is not None, "Must set an eval_env in order to evaluate!"
+    results = []
+    
+    for _ in range(n_episodes):
+      obs, done = env.reset(), False
+      reward = 0.
+      while not done and reward < 1.:
+        action, _ = self.predict(obs)
+        obs, rew, done, _ = env.step(action)
+        reward += rew
+      results.append((reward > 0.).astype(np.float32))
+    return results
+
   def learn(self,
             total_timesteps,
             callback=None,
@@ -399,51 +417,71 @@ class SimpleRLModel(BaseRLModel):
       tb_episode_rewards = np.zeros((self.n_envs,))
       legacy_episode_rewards_per_env = np.zeros((self.n_envs,))
       legacy_episode_rewards = []
+      test_successes = []
 
-      for step in range(total_timesteps // self.n_envs):
-        if callback is not None:
-          callback(locals(), globals())
+      data_path = writer.get_logdir()
+      if not os.path.exists(data_path):
+        os.makedirs(data_path)
+      
+      with open(os.path.join(data_path, 'config.txt'), 'w') as f:
+        for atr, val in self.__dict__.items():
+          if isinstance(val, (str, float, int)):
+            f.write("{} - {}\n".format(atr, val))
+      
+      with open(os.path.join(data_path, 'test_results.txt'), 'w') as f:
 
-        # Take action and update exploration to the newest value
-        actions = self._get_action_for_single_obs(obses)
-        new_obses, rewards, dones, _ = self.env.step(actions)
+        for _ in range(total_timesteps // self.n_envs):
+          if callback is not None:
+            callback(locals(), globals())
+
+          # Take action and update exploration to the newest value
+          actions = self._get_action_for_single_obs(obses)
+          new_obses, rewards, dones, _ = self.env.step(actions)
 
 
-        # Do the learning and fetch tensorboard summaries
-        summaries = self._process_experience(obses, actions, rewards, new_obses, dones)
-        # Do some bookkeepinggg
-        if writer is not None and summaries:
-          for summary in summaries:
-            writer.add_summary(summary, self.global_step)
-            ep_rewards = np.expand_dims(rewards, 1)
-            ep_dones = np.expand_dims(dones, 1)
-            tb_episode_rewards = total_episode_reward_logger(tb_episode_rewards, ep_rewards, ep_dones, writer, len(legacy_episode_rewards))
+          # Do the learning and fetch tensorboard summaries
+          summaries = self._process_experience(obses, actions, rewards, new_obses, dones)
 
-        legacy_episode_rewards_per_env += rewards
-        for idx in np.argwhere(dones):
-          legacy_episode_rewards.append(legacy_episode_rewards_per_env[idx[0]])
-          legacy_episode_rewards_per_env[idx[0]] = 0.
+          # Tensorboard logging
+          if writer is not None and summaries:
+            for summary in summaries:
+              writer.add_summary(summary, self.global_step)
+              ep_rewards = np.expand_dims(rewards, 1)
+              ep_dones = np.expand_dims(dones, 1)
+              tb_episode_rewards = total_episode_reward_logger(tb_episode_rewards, ep_rewards, ep_dones, writer, len(legacy_episode_rewards))
 
-          num_episodes = len(legacy_episode_rewards)
-          if self.verbose >= 1 and log_interval is not None and num_episodes % log_interval == 0:
-            if len(legacy_episode_rewards[-101:-1]) == 0:
-              mean_100ep_reward = -np.inf
-            else:
-              mean_100ep_reward = round(float(np.mean(legacy_episode_rewards[-101:-1])), 2)
+          # Command line and evaluation logging
+          legacy_episode_rewards_per_env += rewards
+          for idx in np.argwhere(dones):
+            legacy_episode_rewards.append(legacy_episode_rewards_per_env[idx[0]])
+            legacy_episode_rewards_per_env[idx[0]] = 0.
 
-            logger.record_tabular("steps", self.task_step)
-            logger.record_tabular("episodes", num_episodes)
-            logger.record_tabular("repl_buff_len", len(self.replay_buffer))
-            if hasattr(self, 'replay_buffer_hindsight') and self.replay_buffer_hindsight is not None:
-              logger.record_tabular("repl_buff_hindsight_len", len(self.replay_buffer_hindsight))
-            logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
-            if self.exploration:
-              logger.record_tabular(
-                  "% time spent exploring",
-                  int(100 * self.exploration.value(self.task_step)))
-            logger.dump_tabular()
+            num_episodes = len(legacy_episode_rewards)
+            if self.eval_env is not None and num_episodes % self.eval_every == 0:
+              test_successes.append(self.evaluate(1)[0])
+              f.write("Step {}---Test {}---Last100 {}\n".format(num_episodes, test_successes[-1], np.mean(test_successes[-100:])))
+              summary = tf.Summary(value=[tf.Summary.Value(tag="test_reward", simple_value=test_successes[-1])])
+              writer.add_summary(summary, num_episodes)
 
-        obses = new_obses
+            if self.verbose >= 1 and log_interval is not None and num_episodes % log_interval == 0:
+              if len(legacy_episode_rewards[-101:-1]) == 0:
+                mean_100ep_reward = -np.inf
+              else:
+                mean_100ep_reward = round(float(np.mean(legacy_episode_rewards[-101:-1])), 2)
+
+              logger.record_tabular("steps", self.task_step)
+              logger.record_tabular("episodes", num_episodes)
+              logger.record_tabular("repl_buff_len", len(self.replay_buffer))
+              if hasattr(self, 'replay_buffer_hindsight') and self.replay_buffer_hindsight is not None:
+                logger.record_tabular("repl_buff_hindsight_len", len(self.replay_buffer_hindsight))
+              logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
+              if self.exploration:
+                logger.record_tabular(
+                    "% time spent exploring",
+                    int(100 * self.exploration.value(self.task_step)))
+              logger.dump_tabular()
+
+          obses = new_obses
 
     return self
 

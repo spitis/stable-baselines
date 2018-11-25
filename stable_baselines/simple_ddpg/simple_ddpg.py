@@ -3,7 +3,9 @@ import numpy as np
 import gym
 import trfl
 import copy
+
 from types import FunctionType
+from itertools import chain
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
@@ -11,7 +13,6 @@ from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, 
 from stable_baselines.common.landmark_generator import AbstractLandmarkGenerator
 from stable_baselines.simple_ddpg.noise import OUNoiseTensorflow, NormalNoiseTensorflow
 from stable_baselines.common.policies import get_policy_from_name
-from itertools import chain
 
 
 class SimpleDDPG(SimpleRLModel):
@@ -54,6 +55,8 @@ class SimpleDDPG(SimpleRLModel):
     :param grad_norm_clipping: (float) amount of gradient norm clipping
     :param verbose: (int) the verbosity level: 0 none, 1 training information, 2 tensorflow debug
     :param tensorboard_log: (str) the log location for tensorboard (if None, no logging)
+    :param eval_env: (env) the gym environment on which to run evaluations
+    :param eval_every: (int) how often (in training episodes) to run an evaluation episode
     :param _init_setup_model: (bool) Whether or not to build the network at the creation of the instance
     """
 
@@ -64,7 +67,8 @@ class SimpleDDPG(SimpleRLModel):
                landmark_training_per_batch=1, landmark_width=1, landmark_generator=None, action_noise='ou_0.2', 
                epsilon_random_exploration=0., param_noise=False, buffer_size=50000, train_freq=1, batch_size=32, learning_starts=1000, 
                target_network_update_frac=0.001, target_network_update_freq=1, hindsight_mode=None, grad_norm_clipping=10.,
-               critic_l2_regularization=1e-2, action_l2_regularization=0., verbose=0, tensorboard_log=None, _init_setup_model=True):
+               critic_l2_regularization=1e-2, action_l2_regularization=0., verbose=0, tensorboard_log=None, eval_env=None, eval_every=10, 
+               _init_setup_model=True):
 
     super(SimpleDDPG, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True)
 
@@ -138,6 +142,8 @@ class SimpleDDPG(SimpleRLModel):
     self.action_l2_regularization = action_l2_regularization
 
     self.tensorboard_log = tensorboard_log
+    self.eval_env = eval_env
+    self.eval_every = eval_every
 
     # Below props are set in self._setup_new_task()
     self.reset = None
@@ -372,7 +378,7 @@ class SimpleDDPG(SimpleRLModel):
               landmark_losses.append(tf.maximum(0., landmark_lower_bound - critic_branch.value_fn))
               if k == 0:
                 landmark_scores = landmark_lower_bound / critic_branch.value_fn
-                
+
             landmark_losses = tf.concat(landmark_losses, 0)
             tf.summary.histogram('landmark_losses', landmark_losses)
 

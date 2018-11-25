@@ -84,7 +84,7 @@ class CustomFetchPushEnv(FetchPushEnv):
 
 class CustomFetchSlideEnv(FetchSlideEnv):
 
-  def __init__(self, max_step=50, pos_threshold = 0.1, speed_threshold = 0.02):
+  def __init__(self, max_step=50, pos_threshold = 0.07, speed_threshold = 0.05):
     super().__init__(reward_type='sparse')
     self.max_step = max_step
     self.num_step = 0
@@ -178,10 +178,12 @@ class CustomFetchSlideEnv(FetchSlideEnv):
 
 class CustomFetchSlideEnv9DimGoal(FetchSlideEnv):
 
-  def __init__(self, max_step=50, pos_threshold = 0.05, speed_threshold = 0.02):
+  def __init__(self, max_step=50, pos_threshold = 0.07, speed_threshold = 0.05):
     super().__init__(reward_type='sparse')
     self.max_step = max_step
     self.num_step = 0
+    self.pos_threshold = pos_threshold
+    self.speed_threshold = speed_threshold
 
   def compute_reward(self, achieved_goal, goal, info):
     # Compute distance between goal and the achieved goal.
@@ -211,7 +213,6 @@ class CustomFetchSlideEnv9DimGoal(FetchSlideEnv):
     self.num_step = 0
     return obs
 
-    
   def _get_obs(self):
     # positions
     grip_pos = self.sim.data.get_site_xpos('robot0:grip')
@@ -266,7 +267,6 @@ class CustomFetchSlideEnv9DimGoal(FetchSlideEnv):
     else:
       goal = self.initial_gripper_xpos[:3] + self.np_random.uniform(-0.15, 0.15, size=3)
     return np.concatenate([goal, self.initial_gripper_xpos[:3], [0., 0., 0.]])
-
 
 
 class CustomFetchPushEnv6DimGoal(FetchPushEnv):
