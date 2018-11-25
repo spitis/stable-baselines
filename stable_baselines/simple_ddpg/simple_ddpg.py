@@ -721,7 +721,9 @@ class SimpleDDPG(SimpleRLModel):
         "goal_space": self.goal_space,
         "policy": self.policy,
         "n_envs": self.n_envs,
-        "_vectorize_action": self._vectorize_action
+        "_vectorize_action": self._vectorize_action,
+        'eval_env': self.eval_env,
+        'eval_every': self.eval_every,
     }
 
     # Model paramaters to be restored
