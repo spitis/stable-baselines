@@ -14,7 +14,7 @@ from stable_baselines.a2c.utils import conv_to_fc
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG, make_feedforward_extractor, identity_extractor
 from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
-from stable_baselines.common.landmark_generator import RandomLandmarkGenerator
+from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator
 from stable_baselines.common import set_global_seeds
 
 class SimpleMlpPolicy(FeedForwardPolicy):
@@ -72,14 +72,19 @@ def main(args):
 
     landmark_generator = None
     if args.landmark_training:
-      landmark_generator = RandomLandmarkGenerator(100000, make_env(env_fn, 1137)())
+      if args.landmark_gen == 'random':
+        landmark_generator = RandomLandmarkGenerator(100000, make_env(env_fn, 1137)())
+      elif args.landmark_gen == 'nn':
+        landmark_generator = NearestNeighborLandmarkGenerator(100000, make_env(env_fn, 1137)())
+      else:
+        raise ValueError("Unsupported landmark_gen")
 
     model = DDPG(
         env=env,
         policy=SimpleMlpPolicy,
         gamma=0.98,
         actor_lr=1e-3,
-        critic_lr=1e-4,
+        critic_lr=args.critic_lr,
         learning_starts=2500,
         joint_feature_extractor=None,
         joint_goal_feature_extractor=None,
@@ -89,6 +94,7 @@ def main(args):
         landmark_training_per_batch=args.landmark_k,
         landmark_width=args.landmark_w,
         landmark_generator=landmark_generator,
+        landmark_error=args.landmark_error,
         train_freq=args.train_freq,
         target_network_update_frac=0.01,
         target_network_update_freq=args.train_freq * 8,
@@ -105,7 +111,7 @@ def main(args):
         eval_every=10,
     )
 
-    model_name = "ddpg_model_{}_{}_landmark-{}_{}_k-{}_w-{}_crlr-{}_tf-{}_{}_{}_{}_{}_seed-{}_tb-{}".format(args.env, args.tb, args.landmark_training, args.landmark_mode, 
+    model_name = "ddpg_model_{}_{}_{}_landmark-{}_{}_{}_k-{}_w-{}_crlr-{}_tf-{}_{}_{}_{}_{}_seed-{}_tb-{}".format(args.env, args.her, args.tb, args.landmark_training, args.landmark_error, args.landmark_mode, 
       args.landmark_k, args.landmark_w, args.critic_lr, args.train_freq, args.action_l2, args.action_noise, args.eexplore, args.max_timesteps, args.seed, args.tb)
 
     model.learn(total_timesteps=args.max_timesteps, tb_log_name=model_name, log_interval=50)
@@ -130,9 +136,11 @@ if __name__ == '__main__':
     parser.add_argument('--action_noise', default='ou_0.2', type=str, help="action noise")
     parser.add_argument('--eexplore', default=0.3, type=float, help="epsilon exploration")
     parser.add_argument('--landmark_training', default=0., type=float, help='landmark training coefficient')
-    parser.add_argument('--landmark_mode', default='unidirectional', type=str, help='landmark training coefficient')
+    parser.add_argument('--landmark_mode', default='bidirectional', type=str, help='landmark training coefficient')
     parser.add_argument('--landmark_k', default=1, type=int, help='number of landmark trainings per batch')
     parser.add_argument('--landmark_w', default=1, type=int, help='number of steps landmarks can take')
+    parser.add_argument('--landmark_gen', default='random', type=str, help='landmark generator to use')
+    parser.add_argument('--landmark_error', default='linear', type=str, help='landmark error type (linear or squared)')
     parser.add_argument('--train_freq', default=10, type=int, help='how often to train')
     parser.add_argument('--critic_lr', default=1e-3, type=float, help='critic_learning_rate')
     parser.add_argument('--seed', default=0, type=int, help='random seed')

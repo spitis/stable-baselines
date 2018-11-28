@@ -64,7 +64,7 @@ class SimpleDDPG(SimpleRLModel):
                joint_goal_feature_extractor=None, rescale_input=False, rescale_goal=None, normalize_input=True, normalize_goal=None, 
                observation_pre_norm_range=(-200., 200.), goal_pre_norm_range=None, observation_post_norm_range=(-5., 5.), 
                goal_post_norm_range=None, clip_value_fn_range=None, landmark_training=False, landmark_mode='unidirectional', 
-               landmark_training_per_batch=1, landmark_width=1, landmark_generator=None, action_noise='ou_0.2', 
+               landmark_training_per_batch=1, landmark_width=1, landmark_generator=None, landmark_error='linear', action_noise='ou_0.2', 
                epsilon_random_exploration=0., param_noise=False, buffer_size=50000, train_freq=1, batch_size=32, learning_starts=1000, 
                target_network_update_frac=0.001, target_network_update_freq=1, hindsight_mode=None, grad_norm_clipping=10.,
                critic_l2_regularization=1e-2, action_l2_regularization=0., verbose=0, tensorboard_log=None, eval_env=None, eval_every=10, 
@@ -117,6 +117,7 @@ class SimpleDDPG(SimpleRLModel):
     self.landmark_training_per_batch = landmark_training_per_batch
     self.landmark_width = landmark_width
     self.landmark_generator = landmark_generator
+    self.landmark_error = landmark_error
     
     self.action_noise = action_noise
     self.action_noise_fn = None
@@ -375,7 +376,14 @@ class SimpleDDPG(SimpleRLModel):
                 landmark_lower_bound = landmark_critics_s_lg[k].value_fn * landmark_critics_l_g[k].value_fn * (self.gamma  ** self.landmark_width)
               else:
                 raise ValueError('landmark_mode must be one of "unidirectional" or "bidirectional"')
-              landmark_losses.append(tf.maximum(0., landmark_lower_bound - critic_branch.value_fn))
+
+              if self.landmark_error == 'linear':
+                landmark_losses.append(tf.maximum(0., landmark_lower_bound - critic_branch.value_fn))
+              elif self.landmark_error == 'squared':
+                landmark_losses.append(tf.square(tf.maximum(0., landmark_lower_bound - critic_branch.value_fn)))
+              else:
+                raise ValueError('Unsupported landmark_error!')
+              
               if k == 0:
                 landmark_scores = landmark_lower_bound / critic_branch.value_fn
 
@@ -643,6 +651,7 @@ class SimpleDDPG(SimpleRLModel):
           if self.landmark_generator is not None:
             _, landmark_scores, summary = self.sess.run([self._train_step, self._landmark_scores, self._summary_op], 
               feed_dict=feed_dict)
+            landmark_scores = np.squeeze(landmark_scores, 1)
             self.landmark_generator.assign_scores(landmark_scores)
 
           else:
@@ -700,7 +709,7 @@ class SimpleDDPG(SimpleRLModel):
         'landmark_mode': self.landmark_mode,
         'landmark_training_per_batch': self.landmark_training_per_batch,
         'landmark_width': self.landmark_width,
-        'landmark_generator': self.landmark_generator,
+        #'landmark_generator': self.landmark_generator,
         'action_noise': self.action_noise,
         'epsilon_random_exploration': self.epsilon_random_exploration,
         "param_noise": self.param_noise,

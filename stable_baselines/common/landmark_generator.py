@@ -1,6 +1,7 @@
-import numpy as numpy
+import numpy as np
 from stable_baselines.common.replay_buffer import ReplayBuffer
 from abc import ABC, abstractmethod
+import faiss
 
 class AbstractLandmarkGenerator(ABC):
   """
@@ -63,9 +64,69 @@ class RandomLandmarkGenerator(AbstractLandmarkGenerator):
     # Do Nothing (random generator does not learn)
     pass
 
+  def __len__(self):
+    return len(self.state_buffer)
+
 class NearestNeighborLandmarkGenerator(AbstractLandmarkGenerator):
-  def __init__(self, buffer_size, env):
+  def __init__(self, buffer_size, env, epsilon=0.3, time_scale=0.000001, score_cutoff=0.96, threshold_nn_size=1000, max_size=200000):
     super().__init__(buffer_size, env)
     self.state_buffer = ReplayBuffer(self.buffer_size, [("state", self.ob_space.shape)])
+    self.d = self.ob_space.shape[-1] + self.goal_space.shape[-1] + 1
+    self.index = faiss.IndexFlatL2(self.d)
+    self.score_cutoff = score_cutoff
+    self.time_scale = time_scale
+    self.epsilon = epsilon
+    self.threshold_nn_size = threshold_nn_size
+    self.landmarks = np.zeros((0, self.ob_space.shape[-1]))
+    self.time = 0.
+    self.max_size = max_size
     if self.goal_extraction_function is None:
       raise ValueError("Random generator requires a goal_extraction function!")
+
+  def add_state_data(self, states, goals):
+    self.state_buffer.add_batch(states)
+
+  def generate(self, states, goals):
+    self.states = states
+    self.goals = goals
+    nn_size = self.index.ntotal
+
+    if nn_size > self.max_size:
+      #prune half of the nn database
+      self.index.remove_ids(faiss.IDSelectorRange(0, self.max_size//2))
+      self.landmarks = self.landmarks[self.max_size//2:]
+      nn_size = self.index.ntotal
+      assert(len(self.landmarks) == nn_size)
+
+    if nn_size < self.threshold_nn_size:
+      self.landmark_states = landmark_states = self.state_buffer.sample(len(states))[0]
+    else:
+      num_random = int(self.epsilon * len(states))
+      random_landmarks = self.state_buffer.sample(num_random)[0]
+      
+      time_feature = np.ones((len(states)-num_random,1)) * self.time
+      query = np.concatenate([states[num_random:], goals[num_random:], time_feature], 1).astype('float32')
+      _, lidxs = self.index.search(query, 1)
+      genned_landmarks = self.landmarks[lidxs[:,0]]
+
+      self.landmark_states = landmark_states = np.concatenate((random_landmarks, genned_landmarks), 0)
+    
+    landmark_goals = self.goal_extraction_function(landmark_states)
+    return landmark_states, landmark_goals
+
+  def assign_scores(self, scores):
+    # Do Nothing (random generator does not learn)
+    self.time += self.time_scale
+    time_feature = np.ones((len(self.states),1)) * self.time
+    
+    values = np.concatenate((self.states, self.goals, time_feature), 1)
+
+    saved_idxs = np.squeeze(np.argwhere(scores > self.score_cutoff),1)
+    saved_values = values[saved_idxs]
+    saved_landmarks = self.landmark_states[saved_idxs]
+
+    self.index.add(saved_values.astype('float32'))
+    self.landmarks = np.concatenate((self.landmarks, saved_landmarks), 0)
+
+  def __len__(self):
+    return self.index.ntotal

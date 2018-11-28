@@ -482,6 +482,8 @@ class SimpleRLModel(BaseRLModel):
               logger.record_tabular("repl_buff_len", len(self.replay_buffer))
               if hasattr(self, 'replay_buffer_hindsight') and self.replay_buffer_hindsight is not None:
                 logger.record_tabular("repl_buff_hindsight_len", len(self.replay_buffer_hindsight))
+              if hasattr(self, 'landmark_generator') and self.landmark_generator is not None:
+                logger.record_tabular("landmark_gen_length", len(self.landmark_generator))
               logger.record_tabular("mean 100 episode reward", mean_100ep_reward)
               if self.exploration:
                 logger.record_tabular(
