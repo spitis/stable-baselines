@@ -286,6 +286,8 @@ class GoalGridWorldEnv(gym.GoalEnv):
         else:
             return 1.0
 
+    def goal_extraction_function(self, batched_states):
+        return batched_states # Goal is the same as the state
 
     def one_hot(self, vec, size):
         flattened = vec.flatten()
