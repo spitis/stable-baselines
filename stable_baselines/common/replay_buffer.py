@@ -266,7 +266,7 @@ def her_future_landmark(trajectory, k, compute_reward, process_successful_trajec
   for i, (o1, action, _, o2, achieved_goal, _) in enumerate(trajectory):
     sampled_goals_idx = np.random.choice(achieved_goals_range[i:], min(k, len_ag - i), replace=False)
     sampled_goals = achieved_goals[sampled_goals_idx]
-    for j, g in enumerate(sampled_goals):
+    for j, g in zip(sampled_goals_idx, sampled_goals):
       reward = compute_reward(achieved_goal, g, None)
       hindsight_experiences.append([o1, action, reward, o2, reward, g])
 
