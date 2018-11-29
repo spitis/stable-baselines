@@ -246,6 +246,38 @@ def her_future(trajectory, k, compute_reward, process_successful_trajectories=Tr
       hindsight_experiences.append([o1, action, reward, o2, reward, g])
   return hindsight_experiences
 
+
+def her_future_landmark(trajectory, k, compute_reward, process_successful_trajectories=True):
+  """produces hindsight experiences where desired_goal is replaced with future achieved_goals
+  if short circuit is true, cuts of the end of the trajectory where the achieved goal does not move.
+
+  Also generates the landmarks for the hindsight experiences where the landmarks are sampled
+  from the states visited in between the state and hindsight goal."""
+  final_achieved_goal = trajectory[-1][4]
+  if not process_successful_trajectories and np.allclose(final_achieved_goal, trajectory[-1][5]):
+    return []  # don't add successful trajectories twice
+  achieved_goals = np.array([transition[4] for transition in trajectory])
+  states = np.array([transition[0] for transition in trajectory])
+
+  len_ag = len(achieved_goals)
+  achieved_goals_range = np.array(range(len_ag))
+  hindsight_experiences = []
+  landmark_experiences = []
+  for i, (o1, action, _, o2, achieved_goal, _) in enumerate(trajectory):
+    sampled_goals_idx = np.random.choice(achieved_goals_range[i:], min(k, len_ag - i), replace=False)
+    sampled_goals = achieved_goals[sampled_goals_idx]
+    for j, g in enumerate(sampled_goals):
+      reward = compute_reward(achieved_goal, g, None)
+      hindsight_experiences.append([o1, action, reward, o2, reward, g])
+
+      # Sample a landmark value
+      if (j-i) > 1: # More than 1 time steps apart
+        landmark_idx = np.random.choice(range(i+1,j)) # Doesn't include the ith and jth state
+        sampled_landmark = states[landmark_idx]
+        landmark_experiences.append([o1, action, sampled_landmark, g])
+
+  return hindsight_experiences, landmark_experiences
+
 def her_future_with_states(trajectory, k, compute_reward):
   """produces hindsight experiences where desired_goal is replaced with future achieved_goals
   if short circuit is true, cuts of the end of the trajectory where the achieved goal does not move"""

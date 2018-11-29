@@ -10,6 +10,7 @@ class AbstractLandmarkGenerator(ABC):
 
   def __init__(self, buffer_size, env):
     self.buffer_size = buffer_size
+    self.ac_space = env.action_space
     self.ob_space = env.observation_space.spaces['observation']
     self.goal_space = env.observation_space.spaces['achieved_goal']
     if not env.goal_extraction_function:
@@ -24,6 +25,13 @@ class AbstractLandmarkGenerator(ABC):
   def add_state_data(self, states, achieved_goals):
     """
     Processes state / achieved_goal data.
+    """
+    raise NotImplementedError
+
+  @abstractmethod
+  def add_landmark_experience_data(self, states, achieved_goals):
+    """
+    Processes state / action / landmark / goal data.
     """
     raise NotImplementedError
 
@@ -71,6 +79,12 @@ class NearestNeighborLandmarkGenerator(AbstractLandmarkGenerator):
   def __init__(self, buffer_size, env, epsilon=0.3, time_scale=0.000001, score_cutoff=0.96, threshold_nn_size=1000, max_size=200000):
     super().__init__(buffer_size, env)
     self.state_buffer = ReplayBuffer(self.buffer_size, [("state", self.ob_space.shape)])
+    landmark_items = [("state", self.ob_space.shape),
+                      ("action", self.ac_space.shape),
+                      ("landmark", self.ob_space.shape),
+                      ("desired_goal", self.goal_space.shape)
+                ]
+    self.landmark_experience_buffer = ReplayBuffer(self.buffer_size, landmark_items)
     self.d = self.ob_space.shape[-1] + self.goal_space.shape[-1] + 1
     self.index = faiss.IndexFlatL2(self.d)
     self.score_cutoff = score_cutoff
@@ -85,6 +99,9 @@ class NearestNeighborLandmarkGenerator(AbstractLandmarkGenerator):
 
   def add_state_data(self, states, goals):
     self.state_buffer.add_batch(states)
+
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals):
+    self.landmark_experience_buffer.add_batch(states, actions, landmarks, desired_goals)
 
   def generate(self, states, goals):
     self.states = states

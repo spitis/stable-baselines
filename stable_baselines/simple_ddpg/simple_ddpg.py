@@ -9,7 +9,7 @@ from itertools import chain
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, her_future_with_states, HerFutureAchievedPastActual
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, her_future_landmark,  her_future_with_states, HerFutureAchievedPastActual
 from stable_baselines.common.landmark_generator import AbstractLandmarkGenerator
 from stable_baselines.simple_ddpg.noise import OUNoiseTensorflow, NormalNoiseTensorflow
 from stable_baselines.common.policies import get_policy_from_name
@@ -489,12 +489,26 @@ class SimpleDDPG(SimpleRLModel):
     self.task_step = 0
     self.reset = np.ones([self.n_envs, 1])
 
+    if self.goal_space is not None and self.landmark_training:
+        if isinstance(self.landmark_generator, FunctionType):
+          self.landmark_generator = self.landmark_generator(self.buffer_size, self.env)
+        elif self.landmark_generator is None:
+          self.state_buffer = ReplayBuffer(self.buffer_size,
+                                        [("state", self.env.observation_space.spaces['observation'].shape),
+                                        ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
+        else:
+          assert isinstance(self.landmark_generator, AbstractLandmarkGenerator)
+
     if self.hindsight_mode == 'final':
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
       self.hindsight_frac = 0.5
     elif isinstance(self.hindsight_mode, str) and 'future_' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
-      self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+      if self.landmark_generator is not None:
+        # Assume that landmark generator needs to have a separate landmark buffer containing [s,a,l,g] tuples
+        self.hindsight_fn = lambda trajectory: her_future_landmark(trajectory, int(k), self.env.compute_reward)
+      else:
+        self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
       self.hindsight_frac = 1. - 1. / (1. + float(k))
     elif isinstance(self.hindsight_mode, str) and 'futureactual_' in self.hindsight_mode:
       _, k, p = self.hindsight_mode.split('_')
@@ -513,15 +527,6 @@ class SimpleDDPG(SimpleRLModel):
 
       hindsight_items += [("desired_goal", self.env.observation_space.spaces['desired_goal'].shape)]
 
-      if self.landmark_training:
-        if isinstance(self.landmark_generator, FunctionType):
-          self.landmark_generator = self.landmark_generator(self.buffer_size, self.env)
-        elif self.landmark_generator is None:
-          self.state_buffer = ReplayBuffer(self.buffer_size,
-                                        [("state", self.env.observation_space.spaces['observation'].shape),
-                                        ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
-        else:
-          assert isinstance(self.landmark_generator, AbstractLandmarkGenerator)
 
     self.replay_buffer = ReplayBuffer(int((1 - self.hindsight_frac) * self.buffer_size), items)
     if self.hindsight_fn is not None:
@@ -582,8 +587,20 @@ class SimpleDDPG(SimpleRLModel):
           # commit the subbuffer
           self.hindsight_subbuffer.commit_subbuffer(idx)
           if len(self.hindsight_subbuffer) == self.n_envs:
-            for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.process_trajectories()):
+            if self.landmark_generator is not None:
+              # Using landmarks will return also the landmark transitions
+              hindsight_experiences, landmark_experiences = zip(*self.hindsight_subbuffer.process_trajectories())
+            else:
+              hindsight_experiences = self.hindsight_subbuffer.process_trajectories()
+
+            for hindsight_experience in chain.from_iterable(hindsight_experiences):
               self.replay_buffer_hindsight.add(*hindsight_experience)
+
+            if self.landmark_generator is not None:
+              for landmark_experience in chain.from_iterable(landmark_experiences):
+                self.landmark_generator.add_landmark_experience_data(*landmark_experience)
+
+
             self.hindsight_subbuffer.clear_main_buffer()
 
     summaries = []
