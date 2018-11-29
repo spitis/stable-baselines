@@ -395,7 +395,7 @@ class SimpleRLModel(BaseRLModel):
         action, _ = self.predict(obs)
         obs, rew, done, _ = env.step(action)
         reward += rew
-      results.append((reward > 0.).astype(np.float32))
+      results.append(float(reward > 0.))
     return results
 
   def learn(self,
