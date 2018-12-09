@@ -364,7 +364,7 @@ class SimpleDDPG(SimpleRLModel):
                 tf.contrib.layers.l2_regularizer(self.critic_l2_regularization), critic_branch.trainable_vars)
 
           # landmark training
-          landmark_scores = None
+          landmark_scores, landmark_ratios = None, None
           if self.landmark_training:
             landmark_losses = []
             
@@ -386,6 +386,8 @@ class SimpleDDPG(SimpleRLModel):
               
               if k == 0:
                 landmark_scores = landmark_lower_bound / critic_branch.value_fn
+                logsl, loglg = tf.log(landmark_critics_s_lg[k].value_fn), tf.log(landmark_critics_l_g[k].value_fn)
+                landmark_ratios = logsl / (logsl + loglg)
 
             landmark_losses = tf.concat(landmark_losses, 0)
             tf.summary.histogram('landmark_losses', landmark_losses)
@@ -471,6 +473,7 @@ class SimpleDDPG(SimpleRLModel):
           self._landmark_state_ph = landmark_state_ph
           self._landmark_goal_ph = landmark_goal_ph
           self._landmark_scores = landmark_scores
+          self._landmark_ratios = landmark_ratios
           self.update_target_network = update_target_network
           self.model = actor_branch
           self.target_model = target_actor_branch
@@ -597,8 +600,8 @@ class SimpleDDPG(SimpleRLModel):
               self.replay_buffer_hindsight.add(*hindsight_experience)
 
             if self.landmark_generator is not None:
-              for landmark_experience in chain.from_iterable(landmark_experiences):
-                self.landmark_generator.add_landmark_experience_data(*landmark_experience)
+              s, a, l, g = [np.array(a) for a in zip(*chain.from_iterable(landmark_experiences))]
+              self.landmark_generator.add_landmark_experience_data(s, a, l, g)
 
 
             self.hindsight_subbuffer.clear_main_buffer()
@@ -640,7 +643,7 @@ class SimpleDDPG(SimpleRLModel):
 
             if self.landmark_training:
               if self.landmark_generator is not None:
-                landmark_states, landmark_goals = self.landmark_generator.generate(obses_t, desired_g)
+                landmark_states, landmark_goals = self.landmark_generator.generate(obses_t, actions, desired_g)
               else:
                 landmark_states, landmark_goals = self.state_buffer.sample(self.batch_size)
 
@@ -666,10 +669,12 @@ class SimpleDDPG(SimpleRLModel):
               feed_dict[self._landmark_goal_ph] = landmark_goals
 
           if self.landmark_generator is not None:
-            _, landmark_scores, summary = self.sess.run([self._train_step, self._landmark_scores, self._summary_op], 
+            _, landmark_scores, landmark_ratios, summary = self.sess.run(
+              [self._train_step, self._landmark_scores, self._landmark_ratios, self._summary_op], 
               feed_dict=feed_dict)
             landmark_scores = np.squeeze(landmark_scores, 1)
-            self.landmark_generator.assign_scores(landmark_scores)
+            landmark_ratios = np.squeeze(landmark_ratios, 1)
+            self.landmark_generator.assign_scores(landmark_scores, landmark_ratios)
 
           else:
             _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)

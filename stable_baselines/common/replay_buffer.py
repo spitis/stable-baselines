@@ -156,6 +156,10 @@ class ReplayBuffer(object):
     :param items: a list of batched transition values to append to the replay buffer,
         in the item order that we initialized the ReplayBuffer with.
     """
+    if (items[0].shape) == 1 or len(items[0]) == 1:
+      self.add(*items)
+      return
+
     for buf, batched_values in zip(self.items.values(), items):
       buf.append_batch(batched_values)
 

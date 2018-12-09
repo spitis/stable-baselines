@@ -14,7 +14,7 @@ from stable_baselines.a2c.utils import conv_to_fc
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG, make_feedforward_extractor, identity_extractor
 from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
-from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator
+from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, NonScoreBasedVAEWithNNRefinement
 from stable_baselines.common import set_global_seeds
 
 class SimpleMlpPolicy(FeedForwardPolicy):
@@ -76,6 +76,8 @@ def main(args):
         landmark_generator = RandomLandmarkGenerator(100000, make_env(env_fn, 1137)())
       elif args.landmark_gen == 'nn':
         landmark_generator = NearestNeighborLandmarkGenerator(100000, make_env(env_fn, 1137)())
+      elif 'vae' in args.landmark_gen:
+        landmark_generator = NonScoreBasedVAEWithNNRefinement(int(args.landmark_gen.split('_')[1]), make_env(env_fn, 1137)(), refine_with_NN=args.refine_vae)
       else:
         raise ValueError("Unsupported landmark_gen")
 
@@ -111,8 +113,9 @@ def main(args):
         eval_every=10,
     )
 
-    model_name = "ddpg_model_{}_{}_{}_landmark-{}_{}_{}_k-{}_w-{}_crlr-{}_tf-{}_{}_{}_{}_{}_seed-{}_tb-{}".format(args.env, args.her, args.tb, args.landmark_training, args.landmark_error, args.landmark_mode, 
-      args.landmark_k, args.landmark_w, args.critic_lr, args.train_freq, args.action_l2, args.action_noise, args.eexplore, args.max_timesteps, args.seed, args.tb)
+    model_name = "ddpg_model_{}_{}_{}_landmark-{}_{}_ref{}_{}_{}_k-{}_w-{}_crlr-{}_tf-{}_{}_{}_{}_{}_seed-{}_tb-{}".format(args.env, args.her, args.tb, 
+      args.landmark_training, args.landmark_gen, args.refine_vae, args.landmark_error, args.landmark_mode, args.landmark_k, args.landmark_w, args.critic_lr, 
+      args.train_freq, args.action_l2, args.action_noise, args.eexplore, args.max_timesteps, args.seed, args.tb)
 
     model.learn(total_timesteps=args.max_timesteps, tb_log_name=model_name, log_interval=50)
 
@@ -143,6 +146,7 @@ if __name__ == '__main__':
     parser.add_argument('--landmark_error', default='linear', type=str, help='landmark error type (linear or squared)')
     parser.add_argument('--train_freq', default=10, type=int, help='how often to train')
     parser.add_argument('--critic_lr', default=1e-3, type=float, help='critic_learning_rate')
+    parser.add_argument('--refine_vae', default=False, type=bool, help='use nearest neighbor to refine VAE')
     parser.add_argument('--seed', default=0, type=int, help='random seed')
     args = parser.parse_args()
     main(args)
