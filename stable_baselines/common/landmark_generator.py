@@ -366,7 +366,7 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
       latent_loss = -0.5*tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
       loss = tf.reduce_mean(l2_loss + latent_loss)
-      ts = tf.train.AdamOptimizer().minimize(loss)
+      ts = tf.train.GradientDescentOptimizer(0.1).minimize(loss)
       init = tf.global_variables_initializer()
 
     self.sess.run(init)

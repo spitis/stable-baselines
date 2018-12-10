@@ -17,17 +17,20 @@ from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, NonScoreBasedVAEWithNNRefinement
 from stable_baselines.common import set_global_seeds
 
+nonsaturating = False
+
 class SimpleMlpPolicy(FeedForwardPolicy):
   """
     Policy object that implements actor critic, using a MLP (2 layers of 256)
   """
   def __init__(self, *args, **kwargs):
+      global nonsaturating
       super(SimpleMlpPolicy, self).__init__(*args, **kwargs,
-                                         layers=[400,400],
-                                         layer_norm=True,
-                                         activ=tf.nn.relu,
-                                         feature_extraction="mlp")
-
+                                      layers=[400,400],
+                                      layer_norm=False,
+                                      activ=tf.nn.relu,
+                                      feature_extraction="mlp",
+                                      use_non_saturating_activation=nonsaturating)
 
 def main(args):
     """
@@ -35,6 +38,10 @@ def main(args):
 
     :param args: (ArgumentParser) the input arguments100000
     """
+
+
+    global nonsaturating
+    nonsaturating = args.nonsaturating
 
     def make_env(env_fn, rank, seed=args.seed):
         """
@@ -66,7 +73,7 @@ def main(args):
       grid_file = "{}.txt".format(args.room_file)
       env_fn = discrete_to_box_wrapper(GoalGridWorldEnv(grid_size=5, max_step=50, grid_file=grid_file))
     else:
-      env_fn = gym.make(args.env)
+      env_fn = lambda: gym.make(args.env)
 
     env = SubprocVecEnv([make_env(env_fn, i) for i in range(12)])
 
@@ -81,16 +88,18 @@ def main(args):
       else:
         raise ValueError("Unsupported landmark_gen")
 
+    clip_value = tuple([float(i) for i in args.clip_values.replace('neg','-').split('_')])
+
     model = DDPG(
         env=env,
         policy=SimpleMlpPolicy,
-        gamma=0.98,
-        actor_lr=1e-3,
+        gamma=args.gamma,
+        actor_lr=args.actor_lr,
         critic_lr=args.critic_lr,
         learning_starts=2500,
         joint_feature_extractor=None,
         joint_goal_feature_extractor=None,
-        clip_value_fn_range=(0.,1.),
+        clip_value_fn_range=clip_value,
         landmark_training=args.landmark_training,
         landmark_mode=args.landmark_mode,
         landmark_training_per_batch=args.landmark_k,
@@ -99,10 +108,10 @@ def main(args):
         landmark_error=args.landmark_error,
         train_freq=args.train_freq,
         target_network_update_frac=0.01,
-        target_network_update_freq=args.train_freq * 8,
+        target_network_update_freq=args.train_freq * args.update_factor,
         epsilon_random_exploration=args.eexplore,
         action_noise=args.action_noise,
-        critic_l2_regularization=0.,
+        critic_l2_regularization=args.critic_l2,
         action_l2_regularization=args.action_l2,
         verbose=1,
         batch_size=360,
@@ -113,8 +122,8 @@ def main(args):
         eval_every=10,
     )
 
-    model_name = "ddpg_model_{}_{}_{}_landmark-{}_{}_ref{}_{}_{}_k-{}_w-{}_crlr-{}_tf-{}_{}_{}_{}_{}_seed-{}_tb-{}".format(args.env, args.her, args.tb, 
-      args.landmark_training, args.landmark_gen, args.refine_vae, args.landmark_error, args.landmark_mode, args.landmark_k, args.landmark_w, args.critic_lr, 
+    model_name = "ddpg_model_{}_{}_{}_landmark-{}_{}_ref{}_nonsat{}_{}_{}_k-{}_w-{}_crlr-{}_tf-{}_{}_{}_{}_{}_seed-{}_tb-{}".format(args.env, args.her, args.tb, 
+      args.landmark_training, args.landmark_gen, args.refine_vae, args.nonsaturating, args.landmark_error, args.landmark_mode, args.landmark_k, args.landmark_w, args.critic_lr, 
       args.train_freq, args.action_l2, args.action_noise, args.eexplore, args.max_timesteps, args.seed, args.tb)
 
     model.learn(total_timesteps=args.max_timesteps, tb_log_name=model_name, log_interval=50)
@@ -136,6 +145,7 @@ if __name__ == '__main__':
     parser.add_argument('--room-file', default='room_5x5_empty', type=str,
                         help="Room type: room_5x5_empty (default), 2_room_9x9")
     parser.add_argument('--action_l2', default=5e-3, type=float, help="action l2 norm")
+    parser.add_argument('--critic_l2', default=0., type=float, help="critic weights l2 penalty")
     parser.add_argument('--action_noise', default='ou_0.2', type=str, help="action noise")
     parser.add_argument('--eexplore', default=0.3, type=float, help="epsilon exploration")
     parser.add_argument('--landmark_training', default=0., type=float, help='landmark training coefficient')
@@ -145,8 +155,13 @@ if __name__ == '__main__':
     parser.add_argument('--landmark_gen', default='random', type=str, help='landmark generator to use')
     parser.add_argument('--landmark_error', default='linear', type=str, help='landmark error type (linear or squared)')
     parser.add_argument('--train_freq', default=10, type=int, help='how often to train')
+    parser.add_argument('--update_factor', default=8, type=int, help='how often to update (in number training steps)')
     parser.add_argument('--critic_lr', default=1e-3, type=float, help='critic_learning_rate')
+    parser.add_argument('--actor_lr', default=1e-3, type=float, help='actor_learning_rate')
     parser.add_argument('--refine_vae', default=False, type=bool, help='use nearest neighbor to refine VAE')
+    parser.add_argument('--nonsaturating', default=False, type=bool, help='use non-saturating activation for policy')
+    parser.add_argument('--clip_values', default='0._1.', type=str, help='range for value clipping (0, 1) defualt')
+    parser.add_argument('--gamma', default=0.98, type=float, help='discount factorcx')
     parser.add_argument('--seed', default=0, type=int, help='random seed')
     args = parser.parse_args()
     main(args)

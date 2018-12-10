@@ -71,7 +71,7 @@ class SubprocVecEnv(VecEnv):
           dummy_env = env_fns[0]()
           if dummy_env.compute_reward is not None:
             self.compute_reward = dummy_env.compute_reward
-          if dummy_env.goal_extraction_function is not None:
+          if hasattr(dummy_env, 'goal_extraction_function') and dummy_env.goal_extraction_function is not None:
             self.goal_extraction_function = dummy_env.goal_extraction_function
           self.goal_env = True
           self.goal_keys = tuple(observation_space.spaces.keys())

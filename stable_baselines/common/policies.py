@@ -4,9 +4,37 @@ import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.layers as tf_layers
 from gym.spaces import Discrete, Box, MultiBinary, MultiDiscrete
+from tensorflow.python.ops import gen_math_ops
+from tensorflow.python.ops import math_ops
 
 from stable_baselines.a2c.utils import conv, linear, conv_to_fc, batch_to_seq, seq_to_batch, lstm
 from stable_baselines.common.distributions import make_proba_dist_type
+
+@tf.RegisterGradient('NonSaturatingTanh')
+def _NonSaturatingTanhGrad(op, grad):
+  tanh = op.outputs[0]  # y = tanh(x)
+  with tf.control_dependencies([grad]):
+    z = math_ops.conj(tanh)
+    tanh_grad = gen_math_ops.tanh_grad(z, grad)
+  
+    mask = tf.to_float(tf.equal(tf.sign(tanh), tf.sign(tanh_grad)))
+    return mask * tf.sign(tanh_grad)*tf.maximum(tf.abs(grad*0.1), tf.abs(tanh_grad)) + (1-mask) * tanh_grad
+
+@tf.RegisterGradient('NonSaturatingSigmoid')
+def _NonSaturatingSigmoidGrad(op, grad):
+  sigmoid = op.outputs[0]  # y = sigmoid(x)
+  with tf.control_dependencies([grad]):
+    z = math_ops.conj(sigmoid)
+    sigmoid_grad = gen_math_ops.sigmoid_grad(z, grad)
+  
+    mask = tf.to_float(tf.equal(tf.sign(sigmoid - 0.5), tf.sign(sigmoid_grad)))
+    return mask * tf.sign(sigmoid_grad)*tf.maximum(tf.abs(grad*0.025), tf.abs(sigmoid_grad)) + (1-mask) * sigmoid_grad
+
+def non_saturating_sigmoid(x, g = None):
+  if g is None:
+    g = tf.get_default_graph()
+  with g.gradient_override_map({"Sigmoid": "NonSaturatingSigmoid"}):
+      return tf.sigmoid(x)
 
 
 def nature_cnn(scaled_images, **kwargs):
@@ -101,7 +129,7 @@ class BasePolicy(ABC):
 
   def __init__(self, sess, ob_space, ac_space, n_env, n_steps, n_batch, n_lstm=256, reuse=False, *,
                layers=None, scale=False, obs_phs=None, dueling=True, is_DQN=False, goal_space=None,
-               goal_phs=None, action_ph=None):
+               goal_phs=None, action_ph=None, use_non_saturating_activation=False):
     self.n_env = n_env
     self.n_steps = n_steps
     
@@ -164,6 +192,8 @@ class BasePolicy(ABC):
 
     self.is_DQN = is_DQN
 
+    self.use_non_saturating_activation = use_non_saturating_activation
+
   def _setup_and_validate(self):
     """
     Sets up the distibutions, actions, and value, and validates the policy object
@@ -179,7 +209,12 @@ class BasePolicy(ABC):
         self.policy = tf.nn.softmax(self.policy)
       elif isinstance(self.ac_space, Box):
         print('conforming actions to action_space with highs {} and lows {}'.format(self.ac_space.high, self.ac_space.low))
-        self.unadjusted_policy = tf.nn.sigmoid(self.policy)
+        if not self.use_non_saturating_activation:
+          self.unadjusted_policy = tf.nn.sigmoid(self.policy)
+        else:
+          print('using non-saturating activation')
+          self.unadjusted_policy = non_saturating_sigmoid(self.policy)
+        
         self.policy = self.unadjusted_policy * (self.ac_space.high - self.ac_space.low) + self.ac_space.low
       self._value = self.value_fn[:, 0]
 

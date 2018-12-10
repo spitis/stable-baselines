@@ -66,7 +66,7 @@ class SimpleDDPG(SimpleRLModel):
                goal_post_norm_range=None, clip_value_fn_range=None, landmark_training=False, landmark_mode='unidirectional', 
                landmark_training_per_batch=1, landmark_width=1, landmark_generator=None, landmark_error='linear', action_noise='ou_0.2', 
                epsilon_random_exploration=0., param_noise=False, buffer_size=50000, train_freq=1, batch_size=32, learning_starts=1000, 
-               target_network_update_frac=0.001, target_network_update_freq=1, hindsight_mode=None, grad_norm_clipping=10.,
+               target_network_update_frac=0.001, target_network_update_freq=1, hindsight_mode=None, grad_norm_clipping=0.5,
                critic_l2_regularization=1e-2, action_l2_regularization=0., verbose=0, tensorboard_log=None, eval_env=None, eval_every=10, 
                _init_setup_model=True):
 
@@ -356,7 +356,7 @@ class SimpleDDPG(SimpleRLModel):
           targets = loss_info.target
           if self.clip_value_fn_range is not None:
             targets = tf.clip_by_value(targets, self.clip_value_fn_range[0], self.clip_value_fn_range[1])
-          mean_critic_loss = tf.reduce_mean(0.5 * tf.square(preds - targets))
+          mean_critic_loss = tf.reduce_mean(tf_util.huber_loss(preds - targets))
 
           # add regularizer
           if self.critic_l2_regularization > 0.:
@@ -394,8 +394,9 @@ class SimpleDDPG(SimpleRLModel):
 
             mean_landmark_loss = self.landmark_training * tf.reduce_mean(landmark_losses)
 
+          tf.summary.histogram("preds", preds)
           tf.summary.scalar("critic_td_error", tf.reduce_mean(loss_info.td_error))
-          tf.summary.histogram("critic_td_error", loss_info.td_error)
+          tf.summary.scalar("critic_td_error_after_clipping", tf.reduce_mean(preds - targets))
           tf.summary.scalar("critic_loss", mean_critic_loss)
           if self.landmark_training:
             tf.summary.scalar("landmark_loss", mean_landmark_loss)
@@ -411,6 +412,7 @@ class SimpleDDPG(SimpleRLModel):
 
           # add action norm regularizer
           if self.action_l2_regularization > 0.:
+            print('regularizing actions with coefficient {}'.format(self.action_l2_regularization))
             mean_actor_loss += self.action_l2_regularization * tf.reduce_mean(
                 tf.square((actor_branch.unadjusted_policy - 0.5) * 2))
 
@@ -451,10 +453,10 @@ class SimpleDDPG(SimpleRLModel):
         with tf.variable_scope("input_info", reuse=False):
           for action_dim in range(self.action_space.shape[0]):
             tf.summary.histogram('policy_dim_{}'.format(action_dim), a_max[:, action_dim])
-            tf.summary.histogram('explor_dim_{}'.format(action_dim), action_ph[:, action_dim])
+            #tf.summary.histogram('explor_dim_{}'.format(action_dim), action_ph[:, action_dim])
           tf.summary.histogram('targets', targets)
           tf.summary.scalar('rewards', tf.reduce_mean(r_t))
-          tf.summary.histogram('rewards', r_t)
+          #tf.summary.histogram('rewards', r_t)
           if len(obs_ph.shape) == 3:
             tf.summary.image('observation', obs_ph)
           else:
@@ -652,7 +654,6 @@ class SimpleDDPG(SimpleRLModel):
 
           rewards = np.squeeze(rewards, 1)
           dones = np.squeeze(dones, 1)
-
           feed_dict = {
               self._obs1_ph: obses_t,
               self._action_ph: actions,
