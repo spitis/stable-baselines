@@ -221,7 +221,14 @@ class NonScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
       latent_loss = -0.5*tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
       loss = tf.reduce_mean(l2_loss + latent_loss)
-      ts = tf.train.AdamOptimizer().minimize(loss)
+      opt = tf.train.AdamOptimizer()
+
+      gradients = opt.compute_gradients(loss, var_list=tf.trainable_variables())
+      for i, (grad, var) in enumerate(gradients):
+        if grad is not None:
+          gradients[i] = (tf.clip_by_norm(grad, 1.), var)
+
+      ts = opt.apply_gradients(gradients)
       init = tf.global_variables_initializer()
 
     self.sess.run(init)
@@ -369,7 +376,14 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
       latent_loss = -0.5*tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
       loss = tf.reduce_mean(l2_loss + latent_loss)
-      ts = tf.train.GradientDescentOptimizer(0.1).minimize(loss)
+      opt = tf.train.AdamOptimizer()
+
+      gradients = opt.compute_gradients(loss, var_list=tf.trainable_variables())
+      for i, (grad, var) in enumerate(gradients):
+        if grad is not None:
+          gradients[i] = (tf.clip_by_norm(grad, 1.), var)
+
+      ts = opt.apply_gradients(gradients)
       init = tf.global_variables_initializer()
 
     self.sess.run(init)
@@ -407,6 +421,9 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       self.steps +=1
       s, a, l, g, add = self.landmark_buffer.sample(self.batch_size)
       
+      if np.any(np.isnan(add)):
+        import pdb; pdb.set_trace()
+
       if self.use_actions:
         feed_dict = {self.g['sagadd_ph']: np.concatenate((s, a, g, add), axis=1),
         self.g['lm_ph']: l}
@@ -435,7 +452,7 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
     # Otherwise, generate using the VAE
 
     sampled_zs = np.random.normal(size=(len(states), self.z_dim))
-    scores = np.concatenate([np.ones((len(states), 1)), np.ones((len(states), 1))/2.], 1) # condition on score = 1, ratio = 0.5.
+    scores = np.concatenate([np.ones((len(states), 1)), np.zeros((len(states), 1))], 1) # condition on score = 1, ratio = 0.
 
     if self.use_actions:
       feed_dict = {self.g['z']: sampled_zs, self.g['sagadd_ph']: np.concatenate([states, actions, goals, scores], axis=1)}

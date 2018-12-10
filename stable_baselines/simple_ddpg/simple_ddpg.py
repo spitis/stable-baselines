@@ -385,9 +385,10 @@ class SimpleDDPG(SimpleRLModel):
                 raise ValueError('Unsupported landmark_error!')
               
               if k == 0:
-                landmark_scores = landmark_lower_bound / critic_branch.value_fn
-                logsl, loglg = tf.log(landmark_critics_s_lg[k].value_fn), tf.log(landmark_critics_l_g[k].value_fn)
-                landmark_ratios = logsl / (logsl + loglg)
+                landmark_scores = tf.clip_by_value(landmark_lower_bound / critic_branch.value_fn, 0., 1.05)
+                landmark_ratios = tf.log(tf.clip_by_value(landmark_critics_s_lg[k].value_fn / landmark_critics_l_g[k].value_fn, 1e-1, 1e1))
+                tf.summary.histogram('landmark_scores', landmark_scores)
+                tf.summary.histogram('landmark_ratios', landmark_ratios)
 
             landmark_losses = tf.concat(landmark_losses, 0)
             tf.summary.histogram('landmark_losses', landmark_losses)
