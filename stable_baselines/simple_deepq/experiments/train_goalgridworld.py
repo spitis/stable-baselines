@@ -85,6 +85,8 @@ def main(args):
         hindsight_frac=0.8,
         landmark_training=args.landmark_training,
         tensorboard_log="./dqn_goalgridworld_tensorboard/{}".format(args.room_file),
+        eval_env=GoalGridWorldEnv(grid_size=5, max_step=40, grid_file=grid_file),
+        eval_every=10,
     )
     assert model.goal_space is not None
     model.learn(total_timesteps=args.max_timesteps, tb_log_name="DQN_her-{}_landmark-{}_{}".format(

@@ -10,7 +10,6 @@ from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv, CustomFet
 from envs import discrete_to_box_wrapper
 from envs.goal_grid import GoalGridWorldEnv
 
-from stable_baselines.a2c.utils import conv_to_fc
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG, make_feedforward_extractor, identity_extractor
 from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv

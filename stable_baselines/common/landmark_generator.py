@@ -218,9 +218,15 @@ class NonScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
       generated_landmark = tf.layers.dense(h, self.ob_space.shape[-1])
 
+      # Distortion is the negative log likelihood:  P(X|z,c)
       l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
+      tf.summary.scalar("VAE_distortion_l2Loss", tf.reduce_mean(l2_loss))
+
+      # The rate is the D_KL(Q(z|X,y)||P(z|c))
       latent_loss = -0.5*tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
+      tf.summary.scalar("VAE_rate_LatentLoss", tf.reduce_mean(latent_loss))
       loss = tf.reduce_mean(l2_loss + latent_loss)
+      tf.summary.scalar("VAE_elbo", loss)
       opt = tf.train.AdamOptimizer()
 
       gradients = opt.compute_gradients(loss, var_list=tf.trainable_variables())
@@ -231,14 +237,22 @@ class NonScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       ts = opt.apply_gradients(gradients)
       init = tf.global_variables_initializer()
 
+      # TODO: Log the generated outputs
+      # tf.summary.image("VAE_gen_landmark", generated_landmark, max_outputs=1)
+      # tf.summary.image("VAE_train_landmark", landmark, max_outputs=1)
+
+      self.summary = tf.summary.merge_all()
+
     self.sess.run(init)
+
     self.g = {
       'sag_ph': state_action_goal,
       'lm_ph': landmark,
       'z': z,
       'generated_landmark': generated_landmark,
       'loss': loss,
-      'ts': ts
+      'ts': ts,
+      'summary': self.summary
     }
 
   def add_state_data(self, states, goals):
@@ -273,11 +287,13 @@ class NonScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
         feed_dict = {self.g['sag_ph']: np.concatenate((s, g), axis=1),
         self.g['lm_ph']: l}
 
-      _, loss_ = self.sess.run([self.g['ts'], self.g['loss']], feed_dict=feed_dict) 
+      _, loss_, summary = self.sess.run([self.g['ts'], self.g['loss'], self.g['summary']], feed_dict=feed_dict)
       loss += loss_
 
     if self.steps % 100 == 0:
       print("Landmark CVAE step {}: loss {}".format(self.steps, loss / self.num_training_steps))
+
+    return summary
 
   def generate(self, states, actions, goals):
     self.states = states
@@ -373,9 +389,13 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
       generated_landmark = tf.layers.dense(h, self.ob_space.shape[-1])
 
+
       l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
+      tf.summary.scalar("VAE_distortion_l2Loss", l2_loss)
       latent_loss = -0.5*tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
+      tf.summary.scalar("VAE_rate_LatentLoss", latent_loss)
       loss = tf.reduce_mean(l2_loss + latent_loss)
+      tf.summary.scalar("VAE_elbo", loss)
       opt = tf.train.AdamOptimizer()
 
       gradients = opt.compute_gradients(loss, var_list=tf.trainable_variables())
@@ -384,7 +404,10 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
           gradients[i] = (tf.clip_by_norm(grad, 1.), var)
 
       ts = opt.apply_gradients(gradients)
+
       init = tf.global_variables_initializer()
+
+      self.summary = tf.summary.merge_all()
 
     self.sess.run(init)
     self.g = {
@@ -393,7 +416,9 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       'z': z,
       'generated_landmark': generated_landmark,
       'loss': loss,
-      'ts': ts
+      'ts': ts,
+      'summary': self.summary
+    }
     }
 
   def add_state_data(self, states, goals):
@@ -420,9 +445,6 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
     for _ in range(self.num_training_steps):
       self.steps +=1
       s, a, l, g, add = self.landmark_buffer.sample(self.batch_size)
-      
-      if np.any(np.isnan(add)):
-        import pdb; pdb.set_trace()
 
       if self.use_actions:
         feed_dict = {self.g['sagadd_ph']: np.concatenate((s, a, g, add), axis=1),
@@ -431,11 +453,13 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
         feed_dict = {self.g['sagadd_ph']: np.concatenate((s, g, add), axis=1),
         self.g['lm_ph']: l}
 
-      _, loss_ = self.sess.run([self.g['ts'], self.g['loss']], feed_dict=feed_dict) 
+      _, loss_, summary = self.sess.run([self.g['ts'], self.g['loss'], self.g['summary']], feed_dict=feed_dict)
       loss += loss_
 
     if self.steps % 100 == 0:
       print("Landmark CVAE step {}: loss {}".format(self.steps, loss / self.num_training_steps))
+
+    return summary
 
   def generate(self, states, actions, goals):
     self.states = states

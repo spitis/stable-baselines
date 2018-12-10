@@ -560,6 +560,7 @@ class SimpleDDPG(SimpleRLModel):
     """Called during training loop after action is taken; includes learning;
               returns a summary"""
 
+    summaries = []
     expanded_done = np.expand_dims(done.astype(np.float32), 1)
     rew = np.expand_dims(rew, 1)
 
@@ -621,12 +622,11 @@ class SimpleDDPG(SimpleRLModel):
 
                 additional = np.concatenate([landmark_scores, landmark_ratios], 1)
 
-              self.landmark_generator.add_landmark_experience_data(s, a, l, g, additional)
-
+              landmark_summaries = self.landmark_generator.add_landmark_experience_data(s, a, l, g, additional)
+              summaries.append(landmark_summaries)
 
             self.hindsight_subbuffer.clear_main_buffer()
 
-    summaries = []
     self.global_step += self.n_envs
     for _ in range(self.n_envs):
       self.task_step += 1

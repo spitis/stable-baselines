@@ -63,6 +63,8 @@ class SimpleDQN(SimpleRLModel):
                grad_norm_clipping=10.,
                verbose=0,
                tensorboard_log=None,
+               eval_env=None,
+               eval_every=10,
                _init_setup_model=True):
 
     super(SimpleDQN, self).__init__(policy=policy, env=env, verbose=verbose, requires_vec_env=True)
@@ -92,6 +94,8 @@ class SimpleDQN(SimpleRLModel):
     self.grad_norm_clipping = grad_norm_clipping
 
     self.tensorboard_log = tensorboard_log
+    self.eval_env = eval_env
+    self.eval_every = eval_every
 
     # Below props are set in self._setup_new_task()
     self.reset = None
@@ -256,6 +260,8 @@ class SimpleDQN(SimpleRLModel):
           tf.summary.scalar("td_error", tf.reduce_mean(loss_info.td_error))
           tf.summary.histogram("td_error", loss_info.td_error)
           tf.summary.scalar("loss", mean_huber_loss)
+          if self.landmark_training:
+            tf.summary.scalar("landmark_loss",  tf.reduce_mean(landmark_losses))
 
           # compute optimization op (potentially with gradient clipping)
           optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
