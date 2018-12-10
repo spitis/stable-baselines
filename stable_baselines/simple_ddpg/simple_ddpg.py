@@ -603,7 +603,24 @@ class SimpleDDPG(SimpleRLModel):
 
             if self.landmark_generator is not None:
               s, a, l, g = [np.array(a) for a in zip(*chain.from_iterable(landmark_experiences))]
-              self.landmark_generator.add_landmark_experience_data(s, a, l, g)
+
+              additional = None
+              if hasattr(self.landmark_generator, 'get_scores_with_experiences') and self.landmark_generator.get_scores_with_experiences:
+                feed_dict = {
+                    self._obs1_ph: s,
+                    self._action_ph: a,
+                    self._goal_ph: g,
+                    self._landmark_state_ph: l,
+                    self._landmark_goal_ph: self.landmark_generator.goal_extraction_function(l),
+                }
+
+                landmark_scores, landmark_ratios = self.sess.run(
+                  [self._landmark_scores, self._landmark_ratios], 
+                  feed_dict=feed_dict)
+
+                additional = np.concatenate([landmark_scores, landmark_ratios], 1)
+
+              self.landmark_generator.add_landmark_experience_data(s, a, l, g, additional)
 
 
             self.hindsight_subbuffer.clear_main_buffer()

@@ -14,7 +14,7 @@ from stable_baselines.a2c.utils import conv_to_fc
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG, make_feedforward_extractor, identity_extractor
 from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
-from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, NonScoreBasedVAEWithNNRefinement
+from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, NonScoreBasedVAEWithNNRefinement, ScoreBasedVAEWithNNRefinement
 from stable_baselines.common import set_global_seeds
 
 nonsaturating = False
@@ -27,7 +27,7 @@ class SimpleMlpPolicy(FeedForwardPolicy):
       global nonsaturating
       super(SimpleMlpPolicy, self).__init__(*args, **kwargs,
                                       layers=[400,400],
-                                      layer_norm=False,
+                                      layer_norm=True,
                                       activ=tf.nn.relu,
                                       feature_extraction="mlp",
                                       use_non_saturating_activation=nonsaturating)
@@ -83,8 +83,10 @@ def main(args):
         landmark_generator = RandomLandmarkGenerator(100000, make_env(env_fn, 1137)())
       elif args.landmark_gen == 'nn':
         landmark_generator = NearestNeighborLandmarkGenerator(100000, make_env(env_fn, 1137)())
-      elif 'vae' in args.landmark_gen:
+      elif 'lervae' in args.landmark_gen:
         landmark_generator = NonScoreBasedVAEWithNNRefinement(int(args.landmark_gen.split('_')[1]), make_env(env_fn, 1137)(), refine_with_NN=args.refine_vae)
+      elif 'scorevae' in args.landmark_gen:
+        landmark_generator = ScoreBasedVAEWithNNRefinement(int(args.landmark_gen.split('_')[1]), make_env(env_fn, 1137)(), refine_with_NN=args.refine_vae)
       else:
         raise ValueError("Unsupported landmark_gen")
 

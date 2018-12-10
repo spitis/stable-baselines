@@ -33,7 +33,7 @@ class AbstractLandmarkGenerator(ABC):
     raise NotImplementedError
 
   @abstractmethod
-  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals):
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional):
     """
     Processes state / action / landmark / goal data.
     """
@@ -65,7 +65,7 @@ class RandomLandmarkGenerator(AbstractLandmarkGenerator):
   def add_state_data(self, states, goals):
     self.state_buffer.add_batch(states)
 
-  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals):
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional=None):
     # Does nothing with landmark experiences
     pass
 
@@ -114,7 +114,7 @@ class NearestNeighborLandmarkGenerator(AbstractLandmarkGenerator):
   def add_state_data(self, states, goals):
     self.state_buffer.add_batch(states)
 
-  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals):
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional=None):
     self.landmark_buffer.add_batch(states, actions, landmarks, desired_goals)
 
   def generate(self, states, actions, goals):
@@ -249,7 +249,7 @@ class NonScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       nn_size = self.index.ntotal
       assert(len(self.landmarks) == nn_size)
 
-  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals):
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional=None):
 
     self.landmark_buffer.add_batch(states, actions, landmarks, desired_goals)
     
@@ -314,6 +314,8 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
   def __init__(self, buffer_size, env, refine_with_NN=False, use_actions=True, batch_size=128, num_training_steps=100, learning_threshold=100, max_nn_index_size=200000):
     super().__init__(buffer_size, env)
 
+    self.get_scores_with_experiences = True
+
     self.refine_with_NN = refine_with_NN
     self.use_actions = use_actions
     self.hidden_dim = 400
@@ -331,7 +333,8 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
     self.landmark_buffer = ReplayBuffer(self.buffer_size, [("state", self.ob_space.shape),
                       ("action", self.ac_space.shape),
                       ("landmark", self.ob_space.shape),
-                      ("desired_goal", self.goal_space.shape)
+                      ("desired_goal", self.goal_space.shape),
+                      ("scores", (2,)) # score & ratio
                 ])
 
     ## NN Index ##
@@ -343,15 +346,15 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
     with self.graph.as_default():
       self.sess = tf_util.make_session(graph=self.graph)
       
-      sag_len = self.ob_space.shape[-1] + self.goal_space.shape[-1]
+      sag_len = self.ob_space.shape[-1] + self.goal_space.shape[-1] + 2
       if self.use_actions:
         sag_len += self.ac_space.shape[-1]
-      state_action_goal = tf.placeholder(tf.float32, [None, sag_len], name='sag_placeholder')
+      state_action_goal_scores = tf.placeholder(tf.float32, [None, sag_len], name='sag_placeholder')
       landmark = tf.placeholder(tf.float32, [None, self.ob_space.shape[-1]], name='lm_placeholder')
 
       # encoder
 
-      h = tf.layers.dense(tf.concat([state_action_goal, landmark], axis=1), self.hidden_dim, activation=tf.nn.relu)
+      h = tf.layers.dense(tf.concat([state_action_goal_scores, landmark], axis=1), self.hidden_dim, activation=tf.nn.relu)
       h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
       mu = tf.layers.dense(h, self.z_dim)
       log_variance = tf.layers.dense(h, self.z_dim)
@@ -359,7 +362,7 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
 
       # decoder
 
-      h = tf.layers.dense(tf.concat([state_action_goal, z], axis=1), self.hidden_dim, activation=tf.nn.relu)
+      h = tf.layers.dense(tf.concat([state_action_goal_scores, z], axis=1), self.hidden_dim, activation=tf.nn.relu)
       h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
       generated_landmark = tf.layers.dense(h, self.ob_space.shape[-1])
 
@@ -371,7 +374,7 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
 
     self.sess.run(init)
     self.g = {
-      'sag_ph': state_action_goal,
+      'sagadd_ph': state_action_goal_scores,
       'lm_ph': landmark,
       'z': z,
       'generated_landmark': generated_landmark,
@@ -394,21 +397,21 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       nn_size = self.index.ntotal
       assert(len(self.landmarks) == nn_size)
 
-  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals):
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional):
 
-    self.landmark_buffer.add_batch(states, actions, landmarks, desired_goals)
+    self.landmark_buffer.add_batch(states, actions, landmarks, desired_goals, additional)
     
     loss = 0
     # run some training steps
     for _ in range(self.num_training_steps):
       self.steps +=1
-      s, a, l, g = self.landmark_buffer.sample(self.batch_size)
+      s, a, l, g, add = self.landmark_buffer.sample(self.batch_size)
       
       if self.use_actions:
-        feed_dict = {self.g['sag_ph']: np.concatenate((s, a, g), axis=1),
+        feed_dict = {self.g['sagadd_ph']: np.concatenate((s, a, g, add), axis=1),
         self.g['lm_ph']: l}
       else:
-        feed_dict = {self.g['sag_ph']: np.concatenate((s, g), axis=1),
+        feed_dict = {self.g['sagadd_ph']: np.concatenate((s, g, add), axis=1),
         self.g['lm_ph']: l}
 
       _, loss_ = self.sess.run([self.g['ts'], self.g['loss']], feed_dict=feed_dict) 
@@ -432,10 +435,12 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
     # Otherwise, generate using the VAE
 
     sampled_zs = np.random.normal(size=(len(states), self.z_dim))
+    scores = np.concatenate([np.ones((len(states), 1)), np.ones((len(states), 1))/2.], 1) # condition on score = 1, ratio = 0.5.
+
     if self.use_actions:
-      feed_dict = {self.g['z']: sampled_zs, self.g['sag_ph']: np.concatenate([states, actions, goals], axis=1)}
+      feed_dict = {self.g['z']: sampled_zs, self.g['sagadd_ph']: np.concatenate([states, actions, goals, scores], axis=1)}
     else:
-      feed_dict = {self.g['z']: sampled_zs, self.g['sag_ph']: np.concatenate([states, goals], axis=1)}
+      feed_dict = {self.g['z']: sampled_zs, self.g['sagadd_ph']: np.concatenate([states, goals, scores], axis=1)}
     landmark_states = self.sess.run(self.g['generated_landmark'], feed_dict=feed_dict)
 
     if self.refine_with_NN:
