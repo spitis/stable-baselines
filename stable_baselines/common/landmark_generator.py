@@ -419,7 +419,6 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       'ts': ts,
       'summary': self.summary
     }
-    }
 
   def add_state_data(self, states, goals):
     """Add state data to buffer (for initial random generation), and also to NN Index"""
