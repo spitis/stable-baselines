@@ -390,10 +390,13 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       generated_landmark = tf.layers.dense(h, self.ob_space.shape[-1])
 
 
+      # Distortion is the negative log likelihood:  P(X|z,c)
       l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
-      tf.summary.scalar("VAE_distortion_l2Loss", l2_loss)
+      tf.summary.scalar("VAE_distortion_l2Loss", tf.reduce_mean(l2_loss))
+
+      # The rate is the D_KL(Q(z|X,y)||P(z|c))
       latent_loss = -0.5*tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
-      tf.summary.scalar("VAE_rate_LatentLoss", latent_loss)
+      tf.summary.scalar("VAE_rate_LatentLoss", tf.reduce_mean(latent_loss))
       loss = tf.reduce_mean(l2_loss + latent_loss)
       tf.summary.scalar("VAE_elbo", loss)
       opt = tf.train.AdamOptimizer()
@@ -497,4 +500,65 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
 
   def __len__(self):
     return self.index.ntotal
+
+
+
+class FetchPushHeuristicGenerator(AbstractLandmarkGenerator):
+  def __init__(self, buffer_size, env):
+    super().__init__(buffer_size, env)
+
+    self.landmarks = np.zeros((0, self.ob_space.shape[-1]))
+    self.d = self.ob_space.shape[-1]
+    self.index = faiss.IndexFlatL2(self.d)
+    self.max_nn_index_size = 200000
+
+  def add_state_data(self, states, goals):
+    """Add state data to buffer (for initial random generation), and also to NN Index"""
+    self.landmarks = np.concatenate((self.landmarks, states), 0)
+    self.index.add(states.astype('float32'))    
+    
+    nn_size = self.index.ntotal
+
+    if nn_size > self.max_nn_index_size:
+      #prune half of the nn database
+      #I verified that this works as intended: when we remove ids from faiss, all ids get bumped up.
+      self.index.remove_ids(faiss.IDSelectorRange(0, self.max_nn_index_size//2))
+      self.landmarks = self.landmarks[self.max_nn_index_size//2:]
+      nn_size = self.index.ntotal
+      assert(len(self.landmarks) == nn_size)
+
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional):
+    pass
+
+  def generate(self, states, actions, goals):
+    """6 dim goals"""
+
+    goal_pos = goals[:,:3]
+    obj_pos = states[:,3:6]
+    gripper_state = states[:, 9:11]
+    obj_rot = states[:,11:14]
+    goal_direction = goal_pos - obj_pos
+    normalized_goal_direction = goal_direction / np.linalg.norm(goal_direction, 1)
+    landmark_states = np.concatenate([
+      obj_pos - normalized_goal_direction * 0.15, 
+      obj_pos, 
+      normalized_goal_direction * 0.15, 
+      gripper_state, 
+      obj_rot, 
+      np.zeros((len(states), 11))
+    ], 1)
+
+    query = landmark_states.astype('float32')
+    _, lidxs = self.index.search(query, 1)
+    landmark_states = self.landmarks[lidxs[:,0]]
+
+    landmark_goals = self.goal_extraction_function(landmark_states)
+    return landmark_states, landmark_goals
+
+  def assign_scores(self, scores, ratios):
+    # Do Nothing (this is not a score-based generator)
+    pass
+
+  def __len__(self):
+    return 0
 

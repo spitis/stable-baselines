@@ -9,7 +9,9 @@ from itertools import chain
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, her_future_landmark,  her_future_with_states, HerFutureAchievedPastActual
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final,\
+  her_future, her_future_landmark,  her_future_with_states, HerFutureAchievedPastActual,\
+  HerFutureAchievedPastAchieved, HerFutureAchievedPastActualVarying, HerFutureAchievedPastActualLandmark
 from stable_baselines.common.landmark_generator import AbstractLandmarkGenerator
 from stable_baselines.simple_ddpg.noise import OUNoiseTensorflow, NormalNoiseTensorflow
 from stable_baselines.common.policies import get_policy_from_name
@@ -518,8 +520,20 @@ class SimpleDDPG(SimpleRLModel):
       self.hindsight_frac = 1. - 1. / (1. + float(k))
     elif isinstance(self.hindsight_mode, str) and 'futureactual_' in self.hindsight_mode:
       _, k, p = self.hindsight_mode.split('_')
-      self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
+      if self.landmark_generator is not None:
+        # Assume that landmark generator needs to have a separate landmark buffer containing [s,a,l,g] tuples
+        self.hindsight_fn = HerFutureAchievedPastActualLandmark(int(k), int(p), self.env.compute_reward)
+      else:
+        self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
       self.hindsight_frac = 1. - 1. / (1. + float(k + p))
+    elif isinstance(self.hindsight_mode, str) and 'futureachieved_' in self.hindsight_mode:
+      _, k, p = self.hindsight_mode.split('_')
+      self.hindsight_fn = HerFutureAchievedPastAchieved(int(k), int(p), self.env.compute_reward)
+      self.hindsight_frac = 1. - 1. / (1. + float(k + p))
+    elif isinstance(self.hindsight_mode, str) and 'futactvarying_' in self.hindsight_mode:
+      _, k = self.hindsight_mode.split('_')
+      self.hindsight_fn = HerFutureAchievedPastActualVarying(int(k), self.env.compute_reward)
+      self.hindsight_frac = 1. - 1. / (1. + float(k))
     else:
       self.hindsight_fn = None
 
@@ -623,7 +637,8 @@ class SimpleDDPG(SimpleRLModel):
                 additional = np.concatenate([landmark_scores, landmark_ratios], 1)
 
               landmark_summaries = self.landmark_generator.add_landmark_experience_data(s, a, l, g, additional)
-              summaries.append(landmark_summaries)
+              if landmark_summaries is not None:
+                summaries.append(landmark_summaries)
 
             self.hindsight_subbuffer.clear_main_buffer()
 

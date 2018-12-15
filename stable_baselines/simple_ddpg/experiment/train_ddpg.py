@@ -6,14 +6,16 @@ import gym
 import os
 
 from gym import wrappers
-from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv, CustomFetchPushEnv6DimGoal, CustomFetchSlideEnv, CustomFetchSlideEnv9DimGoal
+from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv, CustomFetchPushEnv6DimGoal,\
+  CustomFetchSlideEnv, CustomFetchSlideEnv9DimGoal, CustomFetchPushEnvMultiDimGoal
 from envs import discrete_to_box_wrapper
 from envs.goal_grid import GoalGridWorldEnv
 
 from stable_baselines.simple_ddpg import SimpleDDPG as DDPG, make_feedforward_extractor, identity_extractor
 from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv, DummyVecEnv
-from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, NonScoreBasedVAEWithNNRefinement, ScoreBasedVAEWithNNRefinement
+from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, NonScoreBasedVAEWithNNRefinement,\
+  ScoreBasedVAEWithNNRefinement, FetchPushHeuristicGenerator
 from stable_baselines.common import set_global_seeds
 
 nonsaturating = False
@@ -64,6 +66,9 @@ def main(args):
       env_fn = lambda: CustomFetchPushEnv6DimGoal()
     elif args.env == "CustomFetchPush":
       env_fn = lambda: CustomFetchPushEnv()
+    elif "CustomFetchPush_" in args.env:
+      k = int(args.env.split('_')[1])
+      env_fn = lambda: CustomFetchPushEnvMultiDimGoal(goal_dims = k)
     elif args.env == "CustomFetchSlide9Dim":
       env_fn = lambda: CustomFetchSlideEnv9DimGoal()
     elif args.env == "CustomFetchSlide":
@@ -86,6 +91,8 @@ def main(args):
         landmark_generator = NonScoreBasedVAEWithNNRefinement(int(args.landmark_gen.split('_')[1]), make_env(env_fn, 1137)(), refine_with_NN=args.refine_vae)
       elif 'scorevae' in args.landmark_gen:
         landmark_generator = ScoreBasedVAEWithNNRefinement(int(args.landmark_gen.split('_')[1]), make_env(env_fn, 1137)(), refine_with_NN=args.refine_vae)
+      elif 'heur' in args.landmark_gen:
+        landmark_generator = FetchPushHeuristicGenerator(100000, make_env(env_fn, 1137)())
       else:
         raise ValueError("Unsupported landmark_gen")
 
@@ -128,10 +135,6 @@ def main(args):
       args.train_freq, args.action_l2, args.action_noise, args.eexplore, args.max_timesteps, args.seed, args.tb)
 
     model.learn(total_timesteps=args.max_timesteps, tb_log_name=model_name, log_interval=50)
-
-    model_filename = "{}.pkl".format(model_name)
-    print("Saving model to {}".format(model_filename))
-    model.save(model_filename)
 
 
 

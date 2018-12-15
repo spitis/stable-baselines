@@ -391,11 +391,13 @@ class SimpleRLModel(BaseRLModel):
     for _ in range(n_episodes):
       obs, done = env.reset(), False
       reward = 0.
+      steps = 0
       while not done and reward < 1.:
         action, _ = self.predict(obs)
         obs, rew, done, _ = env.step(action)
         reward += rew
-      results.append(float(reward > 0.))
+        steps += 1
+      results.append((float(reward > 0.), steps))
     return results
 
   def learn(self,
@@ -417,7 +419,7 @@ class SimpleRLModel(BaseRLModel):
       tb_episode_rewards = np.zeros((self.n_envs,))
       legacy_episode_rewards_per_env = np.zeros((self.n_envs,))
       legacy_episode_rewards = []
-      test_successes, best_eval = [], 0.
+      test_successes, test_steps, best_eval = [], [], 0.
 
       data_path = writer.get_logdir()
       if not os.path.exists(data_path):
@@ -458,10 +460,15 @@ class SimpleRLModel(BaseRLModel):
 
             num_episodes = len(legacy_episode_rewards)
             if self.eval_env is not None and num_episodes % self.eval_every == 0:
-              test_successes.append(self.evaluate(1)[0])
+              sucs, stps = self.evaluate(1)[0]
+              test_successes.append(sucs)
+              test_steps.append(stps)
               mean_eval = np.mean(test_successes[-100:])
+              mean_steps = np.mean(test_steps[-100:])
               f.write("Step {}---Test {}---Last100 {}\n".format(num_episodes, test_successes[-1], mean_eval))
               summary = tf.Summary(value=[tf.Summary.Value(tag="test_reward", simple_value=test_successes[-1])])
+              writer.add_summary(summary, num_episodes)
+              summary = tf.Summary(value=[tf.Summary.Value(tag="test_reward/steps", simple_value=test_steps[-1])])
               writer.add_summary(summary, num_episodes)
               if (len(test_successes) + 1) % 20 == 0:
                 print("Evaluation perf for last 100 evaluations: {}".format(mean_eval))
