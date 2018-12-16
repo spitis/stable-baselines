@@ -765,6 +765,7 @@ class SimpleDDPG(SimpleRLModel):
         'landmark_mode': self.landmark_mode,
         'landmark_training_per_batch': self.landmark_training_per_batch,
         'landmark_width': self.landmark_width,
+        'landmark_error': self.landmark_error,
         #'landmark_generator': self.landmark_generator,
         'action_noise': self.action_noise,
         'epsilon_random_exploration': self.epsilon_random_exploration,

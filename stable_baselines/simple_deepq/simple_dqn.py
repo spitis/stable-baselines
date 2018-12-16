@@ -4,11 +4,14 @@ import gym
 import trfl
 import copy
 
+from types import FunctionType
+from itertools import chain
+
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, HerFutureAchievedPastActual
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, her_future_landmark, HerFutureAchievedPastActual
 from stable_baselines.common.policies import observation_input
-from itertools import chain
+from stable_baselines.common.landmark_generator import AbstractLandmarkGenerator
 
 class SimpleDQN(SimpleRLModel):
   """
@@ -59,6 +62,11 @@ class SimpleDQN(SimpleRLModel):
                hindsight_mode=None,
                hindsight_frac=0.,
                landmark_training=False,
+               landmark_training_per_batch=1,
+               landmark_generator=None,
+               landmark_mode='unidirectional',
+               landmark_error='linear',
+               landmark_width=1,
                double_q=True,
                grad_norm_clipping=10.,
                verbose=0,
@@ -88,7 +96,13 @@ class SimpleDQN(SimpleRLModel):
 
     self.hindsight_mode = hindsight_mode
     self.hindsight_frac = hindsight_frac
+
     self.landmark_training = landmark_training
+    self.landmark_training_per_batch = landmark_training_per_batch
+    self.landmark_generator = landmark_generator
+    self.landmark_mode = landmark_mode
+    self.landmark_error = landmark_error
+    self.landmark_width = landmark_width
 
     self.double_q = double_q
     self.grad_norm_clipping = grad_norm_clipping
@@ -180,40 +194,61 @@ class SimpleDQN(SimpleRLModel):
 
           # landmark placeholder and processing
           if self.landmark_training:
-            # HC: Sketchy...borrowing processing code from Policies 
-            # and assuming goal processing is the same as observation processing
-            landmark_goal_ph, landmark_goal = observation_input(self.goal_space, batch_size=None, scale=policy.scale, name='landmark_goal') 
-            landmark_state_ph, landmark_state = observation_input(ob_space, batch_size=None, scale=policy.scale, name='landmark_state')
-            
-            # Q(s, a, lg)
-            with tf.variable_scope("q_landmark_s_lg", reuse=True, custom_getter=tf_util.outer_scope_getter("q_landmark_s_lg")):
-              landmark_q_s_lg = self.policy(
-                self.sess,
-                self.observation_space,
-                self.action_space,
-                self.n_envs,
-                1,
-                None,
-                reuse=True,
-                obs_phs=(policy.obs_ph, policy.processed_x),
-                is_DQN=True,
-                goal_space=self.goal_space,
-                goal_phs=(landmark_goal_ph, landmark_goal))
+            landmarks_q_s_lg = []
+            landmarks_q_l_g = []
 
-            # Q(l, a*, g)
-            with tf.variable_scope("q_landmark_l_g", reuse=True, custom_getter=tf_util.outer_scope_getter("q_landmark_l_g")):
-              landmark_q_l_g = self.policy(
-                self.sess,
-                self.observation_space,
-                self.action_space,
-                self.n_envs,
-                1,
-                None,
-                reuse=True,
-                obs_phs=(landmark_state_ph, landmark_state),
-                is_DQN=True,
-                goal_space=self.goal_space,
-                goal_phs=(policy.goal_ph, policy.processed_g))
+            # HC: Sketchy...borrowing processing code from Policies
+            # and assuming goal processing is the same as observation processing
+            landmark_goal_ph, landmark_goal = observation_input(self.goal_space, batch_size=None, scale=policy.scale,
+                                                                name='landmark_goal')
+            landmark_state_ph, landmark_state = observation_input(ob_space, batch_size=None, scale=policy.scale,
+                                                                  name='landmark_state')
+
+            joined_landmark_state_and_goal = tf.concat([landmark_state, landmark_goal], axis=1)
+
+            for k in range(self.landmark_training_per_batch):
+
+              if k > 1:
+                  shuffled_landmark_state_and_goal = tf.random_shuffle(joined_landmark_state_and_goal)
+              else:
+                  shuffled_landmark_state_and_goal = joined_landmark_state_and_goal
+
+              landmark_state, landmark_goal = tf.split(shuffled_landmark_state_and_goal,
+                                                       (ob_space.shape[0], self.goal_space.shape[0]), 1)
+
+              # Q(s, a, lg)
+              with tf.variable_scope("q_landmark_s_lg", reuse=True, custom_getter=tf_util.outer_scope_getter("q_landmark_s_lg")):
+                landmark_q_s_lg = self.policy(
+                  self.sess,
+                  self.observation_space,
+                  self.action_space,
+                  self.n_envs,
+                  1,
+                  None,
+                  reuse=True,
+                  obs_phs=(policy.obs_ph, policy.processed_x),
+                  is_DQN=True,
+                  goal_space=self.goal_space,
+                  goal_phs=(landmark_goal_ph, landmark_goal))
+
+              landmarks_q_s_lg.append(landmark_q_s_lg)
+
+              # Q(l, a*, g)
+              with tf.variable_scope("q_landmark_l_g", reuse=True, custom_getter=tf_util.outer_scope_getter("q_landmark_l_g")):
+                landmark_q_l_g = self.policy(
+                  self.sess,
+                  self.observation_space,
+                  self.action_space,
+                  self.n_envs,
+                  1,
+                  None,
+                  reuse=True,
+                  obs_phs=(landmark_state_ph, landmark_state),
+                  is_DQN=True,
+                  goal_space=self.goal_space,
+                  goal_phs=(policy.goal_ph, policy.processed_g))
+
+              landmarks_q_l_g.append(landmark_q_l_g)
 
         with tf.variable_scope("loss"):
 
@@ -240,28 +275,51 @@ class SimpleDQN(SimpleRLModel):
 
           mean_huber_loss = tf.reduce_mean(tf_util.huber_loss(loss_info.td_error))
 
+          landmark_scores, landmark_ratios = None, None
           if self.landmark_training:
-            # Q(s_t, a_t, l_g)
-            qa_tm1_s_lg = trfl.indexing_ops.batched_index(landmark_q_s_lg.q_values, a_tm1)
-            
-            # max_a Q(l, a, g)
-            q_l_g = tf.reduce_max(landmark_q_l_g.q_values, axis=1)
+            landmark_losses = []
 
-            landmark_lower_bound = tf.stop_gradient(qa_tm1_s_lg * q_l_g * self.gamma)
+            for k in range(self.landmark_training_per_batch):
+              # Q(s_t, a_t, l_g)
+              qa_tm1_s_lg = trfl.indexing_ops.batched_index(landmarks_q_s_lg[k].q_values, a_tm1)
 
-            # Q(s_t, a_t, g)
-            qa_tm1_g = trfl.indexing_ops.batched_index(policy.q_values, a_tm1)
-            
-            landmark_losses = tf.maximum(0., landmark_lower_bound - qa_tm1_g)
+              # max_a Q(l, a, g)
+              q_l_g = tf.reduce_max(landmarks_q_l_g[k].q_values, axis=1)
+
+              # Q(s_t, a_t, g)
+              qa_tm1_g = trfl.indexing_ops.batched_index(policy.q_values, a_tm1)
+
+              if self.landmark_mode == 'unidirectional':
+                landmark_lower_bound = tf.stop_gradient(qa_tm1_s_lg * q_l_g * (self.gamma ** self.landmark_width))
+
+              elif self.landmark_mode == 'bidirectional':
+                landmark_lower_bound = qa_tm1_s_lg * q_l_g * (self.gamma ** self.landmark_width)
+              else:
+                raise ValueError('landmark_mode must be one of "unidirectional" or "bidirectional"')
+
+              if self.landmark_error == 'linear':
+                landmark_losses.append(tf.maximum(0., landmark_lower_bound - qa_tm1_g))
+              elif self.landmark_error == 'squared':
+                landmark_losses.append(tf.square(tf.maximum(0., landmark_lower_bound - qa_tm1_g)))
+              else:
+                raise ValueError('Unsupported landmark_error!')
+
+              if k == 0:
+                landmark_scores = tf.expand_dims(tf.clip_by_value(landmark_lower_bound / qa_tm1_g, 0., 1.05), 1)
+                landmark_ratios = tf.log(
+                  tf.clip_by_value(landmarks_q_s_lg[k].value_fn / landmarks_q_l_g[k].value_fn, 1e-1, 1e1))
+                tf.summary.histogram('landmark_scores', landmark_scores)
+                tf.summary.histogram('landmark_ratios', landmark_ratios)
+
+            landmark_losses = tf.concat(landmark_losses, 0)
             tf.summary.histogram('landmark_losses', landmark_losses)
-            
             mean_huber_loss += self.landmark_training * tf.reduce_mean(landmark_losses)
 
           tf.summary.scalar("td_error", tf.reduce_mean(loss_info.td_error))
           tf.summary.histogram("td_error", loss_info.td_error)
           tf.summary.scalar("loss", mean_huber_loss)
           if self.landmark_training:
-            tf.summary.scalar("landmark_loss",  tf.reduce_mean(landmark_losses))
+            tf.summary.scalar("landmark_loss", tf.reduce_mean(landmark_losses))
 
           # compute optimization op (potentially with gradient clipping)
           optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
@@ -295,35 +353,50 @@ class SimpleDQN(SimpleRLModel):
           else:
             tf.summary.histogram('observation', policy.obs_ph)
 
-        self._act = act
-        self._train_step = training_step
-        self._summary_op = tf.summary.merge_all()
-        self._obs1_ph = policy.obs_ph
-        self._action_ph = a_tm1
-        self._reward_ph = r_t
-        self._obs2_ph = target_policy.obs_ph
-        self._dones_ph = done_mask_ph
-        self._goal_ph = policy.goal_ph
-        self._goal2_ph = target_policy.goal_ph
-        self._landmark_state_ph = landmark_state_ph
-        self._landmark_goal_ph = landmark_goal_ph
-        self.update_target_network = update_target_network
-        self.init_target_network = init_target_network
-        self.model = policy
-        self.target_model = target_policy
+        with tf_util.COMMENT("attribute assignments:"):
+          self._act = act
+          self._train_step = training_step
+          self._obs1_ph = policy.obs_ph
+          self._action_ph = a_tm1
+          self._reward_ph = r_t
+          self._obs2_ph = target_policy.obs_ph
+          self._dones_ph = done_mask_ph
+          self._goal_ph = policy.goal_ph
+          self._goal2_ph = target_policy.goal_ph
+          self._landmark_state_ph = landmark_state_ph
+          self._landmark_goal_ph = landmark_goal_ph
+          self._landmark_scores = landmark_scores
+          self._landmark_ratios = landmark_ratios
+          self.update_target_network = update_target_network
+          self.init_target_network = init_target_network
+          self.model = policy
+          self.target_model = target_policy
+          self.epsilon_ph = epsilon_ph
+          self.reset_ph = reset_ph
+          self.threshold_ph = threshold_ph
 
-        self.epsilon_ph = epsilon_ph
-        self.reset_ph = reset_ph
-        self.threshold_ph = threshold_ph
+          with tf.variable_scope("deepq"):
+            self.params = tf.trainable_variables()
 
-        with tf.variable_scope("deepq"):
-          self.params = tf.trainable_variables()
+        # Log the state, action, goal, and landmark state
+        # with tf.variable_scope("input_info_viz", reuse=False):
+        import pdb; pdb.set_trace()
+        tf.summary.image('input state', tf.cast(self._obs1_ph, tf.float32), max_outputs=1)
+        tf.summary.image('input goal', tf.cast(self._goal_ph, tf.float32), max_outputs=1)
+        action_shape = tf.reshape(self._action_ph, [-1, self.action_space.n, 1, 1])
+        tf.summary.image('input action', tf.cast(action_shape, tf.float32), max_outputs=1)
+        if self.landmark_training:
+          tf.summary.image('generated landmark', tf.cast(self._landmark_goal_ph, tf.float32), max_outputs=1)
 
+        with tf_util.COMMENT("attribute assignments:"):
+          self._summary_op = tf.summary.merge_all()
+        
         # Initialize the parameters and copy them to the target network.
-        tf_util.initialize(self.sess)
-        self.sess.run(self.init_target_network)
+        with tf_util.COMMENT("graph initialization"):
+          tf_util.initialize(self.sess)
+          self.sess.run(self.init_target_network)
 
-        self.summary = tf.summary.merge_all()
+          self.summary = tf.summary.merge_all()
 
   def _setup_new_task(self, total_timesteps):
     """Sets up new task by reinitializing step, replay buffer, and exploration schedule"""
@@ -341,12 +414,17 @@ class SimpleDQN(SimpleRLModel):
       self.hindsight_fn = lambda trajectory: her_final(trajectory, self.env.compute_reward)
     elif isinstance(self.hindsight_mode, str) and 'future_' in self.hindsight_mode:
       _, k = self.hindsight_mode.split('_')
-      self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+      if self.landmark_generator is not None:
+        # Assume that landmark generator needs to have a separate landmark buffer containing [s,a,l,g] tuples
+        self.hindsight_fn = lambda trajectory: her_future_landmark(trajectory, int(k), self.env.compute_reward)
+      else:
+        self.hindsight_fn = lambda trajectory: her_future(trajectory, int(k), self.env.compute_reward)
+      self.hindsight_frac = 1. - 1. / (1. + float(k))
     elif isinstance(self.hindsight_mode,
                     str) and 'futureactual_' in self.hindsight_mode:
       _, k, p = self.hindsight_mode.split('_')
       self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
-    # elif isinstance(self.hindsight_mode, str) and 'landmark' in self.hindsight_mode:
+      self.hindsight_frac = 1. - 1. / (1. + float(k + p))
     else:
       self.hindsight_fn = None
 
@@ -361,10 +439,15 @@ class SimpleDQN(SimpleRLModel):
     
     self.hindsight_subbuffer = EpisodicBuffer(self.n_envs, self.hindsight_fn, n_cpus=min(self.n_envs, 8))
 
-    if self.landmark_training:
-      self.state_buffer = ReplayBuffer(self.buffer_size, [
-        ("state", self.env.observation_space.spaces['observation'].shape), 
-        ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
+    if self.goal_space is not None and self.landmark_training:
+      if isinstance(self.landmark_generator, FunctionType):
+          self.landmark_generator = self.landmark_generator(self.buffer_size, self.env)
+      elif self.landmark_generator is None:
+          self.state_buffer = ReplayBuffer(self.buffer_size, [
+            ("state", self.env.observation_space.spaces['observation'].shape),
+            ("as_goal", self.env.observation_space.spaces['achieved_goal'].shape)])
+      else:
+          assert isinstance(self.landmark_generator, AbstractLandmarkGenerator)
 
     # Create the schedule for exploration starting from 1.
     self.exploration = LinearSchedule(
@@ -393,6 +476,7 @@ class SimpleDQN(SimpleRLModel):
   def _process_experience(self, obs, action, rew, new_obs, done):
     """Called during training loop after action is taken; includes learning;
         returns a summary"""
+    summaries = []
     expanded_done = np.expand_dims(done.astype(np.float32), 1)
     rew = np.expand_dims(rew, 1)
 
@@ -404,9 +488,12 @@ class SimpleDQN(SimpleRLModel):
     # Store transition in the replay buffer, and hindsight subbuffer
     if goal_agent:
       self.replay_buffer.add_batch(obs['observation'], action, rew, new_obs['observation'], expanded_done, new_obs['desired_goal'])
-      
+
       if self.landmark_training:
-        self.state_buffer.add_batch(obs['observation'], obs['achieved_goal'])
+        if self.landmark_generator is not None:
+          self.landmark_generator.add_state_data(obs['observation'], obs['achieved_goal'])
+        else:
+          self.state_buffer.add_batch(obs['observation'], obs['achieved_goal'])
     else:
       self.replay_buffer.add_batch(obs, action, rew, new_obs, expanded_done)
 
@@ -419,11 +506,43 @@ class SimpleDQN(SimpleRLModel):
           # commit the subbuffer
           self.hindsight_subbuffer.commit_subbuffer(idx)
           if len(self.hindsight_subbuffer) == self.n_envs:
-            for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.process_trajectories()):
+            if self.landmark_generator is not None:
+              # Using landmarks will return also the landmark transitions
+              hindsight_experiences, landmark_experiences = zip(*self.hindsight_subbuffer.process_trajectories())
+            else:
+              hindsight_experiences = self.hindsight_subbuffer.process_trajectories()
+
+            # for hindsight_experience in chain.from_iterable(self.hindsight_subbuffer.process_trajectories()):
+            #   self.replay_buffer_hindsight.add(*hindsight_experience)
+
+            for hindsight_experience in chain.from_iterable(hindsight_experiences):
               self.replay_buffer_hindsight.add(*hindsight_experience)
+
+            if self.landmark_generator is not None:
+              s, a, l, g = [np.array(a) for a in zip(*chain.from_iterable(landmark_experiences))]
+
+              additional = None
+              if hasattr(self.landmark_generator,
+                         'get_scores_with_experiences') and self.landmark_generator.get_scores_with_experiences:
+                  feed_dict = {
+                      self._obs1_ph: s,
+                      self._action_ph: a,
+                      self._goal_ph: g,
+                      self._landmark_state_ph: l,
+                      self._landmark_goal_ph: self.landmark_generator.goal_extraction_function(l),
+                  }
+
+                  landmark_scores, landmark_ratios = self.sess.run(
+                      [self._landmark_scores, self._landmark_ratios],
+                      feed_dict=feed_dict)
+
+                  additional = np.concatenate([landmark_scores, landmark_ratios], 1)
+
+              landmark_summaries = self.landmark_generator.add_landmark_experience_data(s, a, l, g, additional)
+              if landmark_summaries:
+                summaries.append(landmark_summaries)
             self.hindsight_subbuffer.clear_main_buffer()
 
-    summaries = []
     self.global_step += self.n_envs
     for _ in range(self.n_envs):
       self.task_step += 1
@@ -431,7 +550,8 @@ class SimpleDQN(SimpleRLModel):
       if self.task_step > self.learning_starts:
         if self.task_step % self.train_freq == 0:
           if goal_agent:
-            if self.replay_buffer_hindsight is not None and self.hindsight_frac > 0.:
+            if self.replay_buffer_hindsight is not None and len(
+                self.replay_buffer_hindsight) and self.hindsight_frac > 0.:
                 hindsight_batch_size = round(self.batch_size * self.hindsight_frac)
                 real_batch_size = self.batch_size - hindsight_batch_size
 
@@ -456,7 +576,10 @@ class SimpleDQN(SimpleRLModel):
 
             # Sample from landmark state buffer, if applicable
             if self.landmark_training:
-              landmark_states, landmark_goals = self.state_buffer.sample(self.batch_size)     
+              if self.landmark_generator is not None:
+                landmark_states, landmark_goals = self.landmark_generator.generate(obses_t, actions, desired_g)
+              else:
+                landmark_states, landmark_goals = self.state_buffer.sample(self.batch_size)
                              
           else:
             obses_t, actions, rewards, obses_tp1, dones = self.replay_buffer.sample(self.batch_size)
@@ -479,7 +602,16 @@ class SimpleDQN(SimpleRLModel):
               feed_dict[self._landmark_state_ph] = landmark_states
               feed_dict[self._landmark_goal_ph] = landmark_goals
 
-          _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
+          if self.landmark_generator is not None:
+            _, landmark_scores, landmark_ratios, summary = self.sess.run(
+              [self._train_step, self._landmark_scores, self._landmark_ratios, self._summary_op],
+              feed_dict=feed_dict)
+            landmark_ratios = np.squeeze(landmark_ratios, 1)
+            self.landmark_generator.assign_scores(landmark_scores, landmark_ratios)
+
+          else:
+            _, summary = self.sess.run([self._train_step, self._summary_op], feed_dict=feed_dict)
+
           summaries.append(summary)
 
         if self.task_step % self.target_network_update_freq == 0:
@@ -530,6 +662,12 @@ class SimpleDQN(SimpleRLModel):
         "target_network_update_freq": self.target_network_update_freq,
         'hindsight_mode': self.hindsight_mode,
         'landmark_training': self.landmark_training,
+        'landmark_mode': self.landmark_mode,
+        'landmark_training_per_batch': self.landmark_training_per_batch,
+        'landmark_width': self.landmark_width,
+        'landmark_error': self.landmark_error,
+        # 'landmark_width': self.landmark_width,
+        #'landmark_generator': self.landmark_generator,
         "double_q": self.double_q,
         "grad_norm_clipping": self.grad_norm_clipping,
         "tensorboard_log": self.tensorboard_log,
