@@ -123,6 +123,7 @@ class NearestNeighborLandmarkGenerator(AbstractLandmarkGenerator):
     self.goals = goals
     nn_size = self.index.ntotal
 
+    import pdb; pdb.set_trace()
     if nn_size > self.max_size:
       #prune half of the nn database
       self.index.remove_ids(faiss.IDSelectorRange(0, self.max_size//2))
@@ -150,7 +151,8 @@ class NearestNeighborLandmarkGenerator(AbstractLandmarkGenerator):
     # Do Nothing (random generator does not learn)
     self.time += self.time_scale
     time_feature = np.ones((len(self.states),1)) * self.time
-    
+
+    import pdb; pdb.set_trace()
     values = np.concatenate((self.states, self.goals, time_feature), 1)
 
     saved_idxs = np.squeeze(np.argwhere(scores > self.score_cutoff),1)
@@ -237,10 +239,6 @@ class NonScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       ts = opt.apply_gradients(gradients)
       init = tf.global_variables_initializer()
 
-      # TODO: Log the generated outputs
-      # tf.summary.image("VAE_gen_landmark", generated_landmark, max_outputs=1)
-      # tf.summary.image("VAE_train_landmark", landmark, max_outputs=1)
-
       self.summary = tf.summary.merge_all()
 
     self.sess.run(init)
@@ -308,7 +306,6 @@ class NonScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       return landmark_states, landmark_goals
 
     # Otherwise, generate using the VAE
-
     sampled_zs = np.random.normal(size=(len(states), self.z_dim))
     if self.use_actions:
       feed_dict = {self.g['z']: sampled_zs, self.g['sag_ph']: np.concatenate([states, actions, goals], axis=1)}
@@ -501,24 +498,19 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
   def __len__(self):
     return self.index.ntotal
 
-
-
 class FetchPushHeuristicGenerator(AbstractLandmarkGenerator):
   def __init__(self, buffer_size, env):
     super().__init__(buffer_size, env)
-
     self.landmarks = np.zeros((0, self.ob_space.shape[-1]))
     self.d = self.ob_space.shape[-1]
     self.index = faiss.IndexFlatL2(self.d)
     self.max_nn_index_size = 200000
-
   def add_state_data(self, states, goals):
     """Add state data to buffer (for initial random generation), and also to NN Index"""
     self.landmarks = np.concatenate((self.landmarks, states), 0)
     self.index.add(states.astype('float32'))    
     
     nn_size = self.index.ntotal
-
     if nn_size > self.max_nn_index_size:
       #prune half of the nn database
       #I verified that this works as intended: when we remove ids from faiss, all ids get bumped up.
@@ -526,13 +518,10 @@ class FetchPushHeuristicGenerator(AbstractLandmarkGenerator):
       self.landmarks = self.landmarks[self.max_nn_index_size//2:]
       nn_size = self.index.ntotal
       assert(len(self.landmarks) == nn_size)
-
   def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional):
     pass
-
   def generate(self, states, actions, goals):
     """6 dim goals"""
-
     goal_pos = goals[:,:3]
     obj_pos = states[:,3:6]
     gripper_state = states[:, 9:11]
@@ -547,12 +536,209 @@ class FetchPushHeuristicGenerator(AbstractLandmarkGenerator):
       obj_rot, 
       np.zeros((len(states), 11))
     ], 1)
-
     query = landmark_states.astype('float32')
     _, lidxs = self.index.search(query, 1)
     landmark_states = self.landmarks[lidxs[:,0]]
-
     landmark_goals = self.goal_extraction_function(landmark_states)
+    return landmark_states, landmark_goals
+  def assign_scores(self, scores, ratios):
+    # Do Nothing (this is not a score-based generator)
+    pass
+  def __len__(self):
+    return 0
+
+class NonScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
+  def __init__(self, buffer_size, env, refine_with_NN=False, use_actions=True, batch_size=128, num_training_steps=100,
+               learning_threshold=100, max_nn_index_size=200000):
+    super().__init__(buffer_size, env)
+
+    self.refine_with_NN = refine_with_NN
+    self.use_actions = use_actions
+    self.hidden_dim = 400
+    self.z_dim = 50
+    self.batch_size = batch_size
+    self.num_training_steps = num_training_steps
+    self.learning_threshold = learning_threshold
+    self.max_nn_index_size = max_nn_index_size
+    if self.goal_extraction_function is None:
+      raise ValueError("NonScoreBasedVAEWithNNRefinement requires a goal_extraction function!")
+    self.steps = 0
+
+    ## Replay Buffers ##
+    self.landmarks = np.zeros((0, np.prod(self.ob_space.shape)))
+    self.landmark_buffer = ReplayBuffer(self.buffer_size, [("state", self.ob_space.shape),
+                                                           ("action", self.ac_space.shape),
+                                                           ("landmark", self.ob_space.shape),
+                                                           ("desired_goal", self.goal_space.shape)
+                                                           ])
+
+    ## NN Index ##
+    self.d = np.prod(self.ob_space.shape)
+    self.index = faiss.IndexFlatL2(int(self.d))
+
+    ## CVAE Graph ##
+    self.graph = tf.Graph()
+    with self.graph.as_default():
+      self.sess = tf_util.make_session(graph=self.graph)
+
+      sag_len = np.prod(self.ob_space.shape) + np.prod(self.goal_space.shape)
+
+      if self.use_actions:
+        sag_len += self.ac_space.n
+      state_action_goal = tf.placeholder(tf.float32, [None, sag_len], name='sag_placeholder')
+      landmark = tf.placeholder(tf.float32, [None, np.prod(self.ob_space.shape)], name='lm_placeholder')
+
+      # encoder
+      h = tf.layers.dense(tf.concat([state_action_goal, landmark], axis=1), self.hidden_dim, activation=tf.nn.relu)
+      h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
+      mu = tf.layers.dense(h, self.z_dim)
+      log_variance = tf.layers.dense(h, self.z_dim)
+      z = tf.random_normal(shape=tf.shape(mu)) * tf.sqrt(tf.exp(log_variance)) + mu
+
+      # decoder
+
+      h = tf.layers.dense(tf.concat([state_action_goal, z], axis=1), self.hidden_dim, activation=tf.nn.relu)
+      h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
+      generated_landmark = tf.layers.dense(h, np.prod(self.ob_space.shape))
+      
+      # Distortion is the negative log likelihood:  P(X|z,c)
+      l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
+      # The rate is the D_KL(Q(z|X,y)||P(z|c))
+      latent_loss = -0.5 * tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
+      loss = tf.reduce_mean(l2_loss + latent_loss)
+
+      with tf.variable_scope("vae_loss"):
+        tf.summary.scalar("VAE_distortion_l2Loss", tf.reduce_mean(l2_loss))
+        tf.summary.scalar("VAE_rate_LatentLoss", tf.reduce_mean(latent_loss))
+        tf.summary.scalar("VAE_elbo", loss)
+
+      opt = tf.train.AdamOptimizer()
+
+      gradients = opt.compute_gradients(loss, var_list=tf.trainable_variables())
+      for i, (grad, var) in enumerate(gradients):
+        if grad is not None:
+          gradients[i] = (tf.clip_by_norm(grad, 1.), var)
+
+      ts = opt.apply_gradients(gradients)
+      init = tf.global_variables_initializer()
+
+      # TODO: Log the generated outputs
+      with tf.variable_scope("VAE_training_info", reuse=False):
+        generated_landmark_orig_shape = tf.reshape(generated_landmark, [-1] + list(self.ob_space.shape))
+        tf.summary.image("VAE_gen_landmark", generated_landmark_orig_shape, max_outputs=1)
+        landmark_orig_shape = tf.reshape(landmark, [-1] + list(self.ob_space.shape))
+        tf.summary.image("VAE_train_landmark", landmark_orig_shape, max_outputs=1)
+
+        import pdb; pdb.set_trace()
+        # Split the SAG placeholder tensor into individual one
+        if self.use_actions:
+          state_ph, action_ph, goal_ph = tf.split(state_action_goal, [np.prod(self.ob_space.shape), self.ac_space.n, np.prod(self.goal_space.shape)], 1)
+          action_shape = tf.reshape(action_ph, [-1, self.ac_space.n, 1, 1])
+          tf.summary.image("VAE_action_input", action_shape, max_outputs=1)
+        else:
+          state_ph, goal_ph = tf.split(state_action_goal, [np.prod(self.ob_space.shape), np.prod(self.goal_space.shape)], 1)
+        
+        # Reshape
+        state_orig_shape = tf.reshape(state_ph, [-1] + list(self.ob_space.shape))
+        goal_orig_shape = tf.reshape(goal_ph, [-1] + list(self.goal_space.shape))
+        tf.summary.image("VAE_state_input", state_orig_shape, max_outputs=1)
+        tf.summary.image("VAE_goal_input", goal_orig_shape, max_outputs=1)
+
+      self.summary = tf.summary.merge_all()
+
+    self.sess.run(init)
+
+    self.g = {
+      'sag_ph': state_action_goal,
+      'lm_ph': landmark,
+      'z': z,
+      'generated_landmark': generated_landmark,
+      'loss': loss,
+      'ts': ts,
+      'summary': self.summary
+    }
+
+  def add_state_data(self, states, goals):
+    """Add state data to buffer (for initial random generation), and also to NN Index"""
+    states = np.reshape(states, [states.shape[0], -1]) # Reshape to batch_size x (H * W * C)
+    self.landmarks = np.concatenate((self.landmarks, states), 0)
+    self.index.add(states.astype('float32'))
+
+    nn_size = self.index.ntotal
+
+    if nn_size > self.max_nn_index_size:
+      # prune half of the nn database
+      # I verified that this works as intended: when we remove ids from faiss, all ids get bumped up.
+      self.index.remove_ids(faiss.IDSelectorRange(0, self.max_nn_index_size // 2))
+      self.landmarks = self.landmarks[self.max_nn_index_size // 2:]
+      nn_size = self.index.ntotal
+      assert (len(self.landmarks) == nn_size)
+
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional=None):
+
+    self.landmark_buffer.add_batch(states, actions, landmarks, desired_goals)
+
+    loss = 0
+    # run some training steps
+    for _ in range(self.num_training_steps):
+      self.steps += 1
+      s_, a_, l_, g_ = self.landmark_buffer.sample(self.batch_size)
+      s = np.reshape(s_, [-1, np.prod(self.ob_space.shape)])
+      l = np.reshape(l_, [-1, np.prod(self.ob_space.shape)])
+      g = np.reshape(g_, [-1, np.prod(self.ob_space.shape)])
+      a = self.get_one_hot(a_.astype(int), self.ac_space.n)
+      if self.use_actions:
+        feed_dict = {self.g['sag_ph']: np.concatenate((s, a, g), axis=1),
+                     self.g['lm_ph']: l}
+      else:
+        feed_dict = {self.g['sag_ph']: np.concatenate((s, g), axis=1),
+                     self.g['lm_ph']: l}
+
+      _, loss_, summary = self.sess.run([self.g['ts'], self.g['loss'], self.g['summary']], feed_dict=feed_dict)
+      loss += loss_
+
+    if self.steps % 100 == 0:
+      print("Landmark CVAE step {}: loss {}".format(self.steps, loss / self.num_training_steps))
+
+    return summary
+
+  def generate(self, states, actions, goals):
+    self.states = states
+    self.actions = actions
+    self.goals = goals
+
+    # Generate randomly at first
+    if self.steps < self.learning_threshold:
+      sample_idx = np.random.choice(len(self.landmarks), len(states))
+      landmark_states = self.landmarks[sample_idx]
+      # Reshape it back to batch_size x H x W x C
+      landmark_states = np.reshape(landmark_states, [-1] + list(self.ob_space.shape))
+      self.landmark_states = landmark_states
+      landmark_goals = self.goal_extraction_function(landmark_states)
+
+      return landmark_states, landmark_goals
+
+    # Otherwise, generate using the VAE
+    states = np.reshape(states, [-1, np.prod(self.ob_space.shape)])
+    goals = np.reshape(goals, [-1, np.prod(self.ob_space.shape)])
+    actions = self.get_one_hot(actions.astype(int), self.ac_space.n)
+
+    sampled_zs = np.random.normal(size=(len(states), self.z_dim))
+    if self.use_actions:
+      feed_dict = {self.g['z']: sampled_zs, self.g['sag_ph']: np.concatenate([states, actions, goals], axis=1)}
+    else:
+      feed_dict = {self.g['z']: sampled_zs, self.g['sag_ph']: np.concatenate([states, goals], axis=1)}
+    landmark_states = self.sess.run(self.g['generated_landmark'], feed_dict=feed_dict)
+
+    if self.refine_with_NN:
+      query = landmark_states.astype('float32')
+      _, lidxs = self.index.search(query, 1)
+      landmark_states = self.landmarks[lidxs[:, 0]]
+
+    # Reshape the landmark_states and goals back
+    landmark_states = np.reshape(landmark_states, [-1] + list(self.ob_space.shape))
+    landmark_goals = self.goal_extraction_function(landmark_states)
+
     return landmark_states, landmark_goals
 
   def assign_scores(self, scores, ratios):
@@ -560,5 +746,217 @@ class FetchPushHeuristicGenerator(AbstractLandmarkGenerator):
     pass
 
   def __len__(self):
-    return 0
+    return self.index.ntotal
 
+  def get_one_hot(self, targets, nb_classes):
+    res = np.eye(nb_classes)[np.array(targets).reshape(-1)]
+    return res.reshape(list(targets.shape) + [nb_classes])
+
+class ScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
+  def __init__(self, buffer_size, env, refine_with_NN=False, use_actions=True, batch_size=128, num_training_steps=100,
+               learning_threshold=100, max_nn_index_size=200000):
+    super().__init__(buffer_size, env)
+    
+    self.get_scores_with_experiences = True
+
+    self.refine_with_NN = refine_with_NN
+    self.use_actions = use_actions
+    self.hidden_dim = 400
+    self.z_dim = 50
+    self.batch_size = batch_size
+    self.num_training_steps = num_training_steps
+    self.learning_threshold = learning_threshold
+    self.max_nn_index_size = max_nn_index_size
+    if self.goal_extraction_function is None:
+      raise ValueError("NonScoreBasedVAEWithNNRefinement requires a goal_extraction function!")
+    self.steps = 0
+
+    ## Replay Buffers ##
+    self.landmarks = np.zeros((0, np.prod(self.ob_space.shape)))
+    self.landmark_buffer = ReplayBuffer(self.buffer_size, [("state", self.ob_space.shape),
+                                                           ("action", self.ac_space.shape),
+                                                           ("landmark", self.ob_space.shape),
+                                                           ("desired_goal", self.goal_space.shape),
+                                                           ("scores", (2,)) # score & ratio
+                                                           ])
+
+    ## NN Index ##
+    self.d = np.prod(self.ob_space.shape)
+    self.index = faiss.IndexFlatL2(int(self.d))
+
+    ## CVAE Graph ##
+    self.graph = tf.Graph()
+    with self.graph.as_default():
+      self.sess = tf_util.make_session(graph=self.graph)
+
+      sag_len = np.prod(self.ob_space.shape) + np.prod(self.goal_space.shape) + 2
+
+      if self.use_actions:
+        sag_len += self.ac_space.n
+      state_action_goal_scores = tf.placeholder(tf.float32, [None, sag_len], name='sag_placeholder')
+      landmark = tf.placeholder(tf.float32, [None, np.prod(self.ob_space.shape)], name='lm_placeholder')
+
+      # encoder
+      h = tf.layers.dense(tf.concat([state_action_goal_scores, landmark], axis=1), self.hidden_dim, activation=tf.nn.relu)
+      h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
+      mu = tf.layers.dense(h, self.z_dim)
+      log_variance = tf.layers.dense(h, self.z_dim)
+      z = tf.random_normal(shape=tf.shape(mu)) * tf.sqrt(tf.exp(log_variance)) + mu
+
+      # decoder
+
+      h = tf.layers.dense(tf.concat([state_action_goal_scores, z], axis=1), self.hidden_dim, activation=tf.nn.relu)
+      h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
+      generated_landmark = tf.layers.dense(h, np.prod(self.ob_space.shape))
+      
+      # Distortion is the negative log likelihood:  P(X|z,c)
+      l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
+      # The rate is the D_KL(Q(z|X,y)||P(z|c))
+      latent_loss = -0.5 * tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
+      loss = tf.reduce_mean(l2_loss + latent_loss)
+
+      with tf.variable_scope("vae_loss"):
+        tf.summary.scalar("VAE_distortion_l2Loss", tf.reduce_mean(l2_loss))
+        tf.summary.scalar("VAE_rate_LatentLoss", tf.reduce_mean(latent_loss))
+        tf.summary.scalar("VAE_elbo", loss)
+
+      opt = tf.train.AdamOptimizer()
+
+      gradients = opt.compute_gradients(loss, var_list=tf.trainable_variables())
+      for i, (grad, var) in enumerate(gradients):
+        if grad is not None:
+          gradients[i] = (tf.clip_by_norm(grad, 1.), var)
+
+      ts = opt.apply_gradients(gradients)
+      init = tf.global_variables_initializer()
+
+      # TODO: Log the generated outputs
+      with tf.variable_scope("VAE_training_info", reuse=False):
+        generated_landmark_orig_shape = tf.reshape(generated_landmark, [-1] + list(self.ob_space.shape))
+        tf.summary.image("VAE_gen_landmark", generated_landmark_orig_shape, max_outputs=1)
+        landmark_orig_shape = tf.reshape(landmark, [-1] + list(self.ob_space.shape))
+        tf.summary.image("VAE_train_landmark", landmark_orig_shape, max_outputs=1)
+
+        import pdb; pdb.set_trace()
+        # Split the SAG placeholder tensor into individual one
+        if self.use_actions:
+          state_ph, action_ph, goal_ph, scores_ph = tf.split(state_action_goal_scores, [np.prod(self.ob_space.shape), self.ac_space.n, np.prod(self.goal_space.shape), 2], 1)
+          action_shape = tf.reshape(action_ph, [-1, self.ac_space.n, 1, 1])
+          tf.summary.image("VAE_action_input", action_shape, max_outputs=1)
+        else:
+          state_ph, goal_ph, scores_ph = tf.split(state_action_goal, [np.prod(self.ob_space.shape), np.prod(self.goal_space.shape), 2], 1)
+        
+        # Reshape
+        state_orig_shape = tf.reshape(state_ph, [-1] + list(self.ob_space.shape))
+        goal_orig_shape = tf.reshape(goal_ph, [-1] + list(self.goal_space.shape))
+        tf.summary.image("VAE_state_input", state_orig_shape, max_outputs=1)
+        tf.summary.image("VAE_goal_input", goal_orig_shape, max_outputs=1)
+
+      self.summary = tf.summary.merge_all()
+
+    self.sess.run(init)
+
+    self.g = {
+      'sagadd_ph': state_action_goal_scores,
+      'lm_ph': landmark,
+      'z': z,
+      'generated_landmark': generated_landmark,
+      'loss': loss,
+      'ts': ts,
+      'summary': self.summary
+    }
+
+  def add_state_data(self, states, goals):
+    """Add state data to buffer (for initial random generation), and also to NN Index"""
+    states = np.reshape(states, [states.shape[0], -1]) # Reshape to batch_size x (H * W * C)
+    self.landmarks = np.concatenate((self.landmarks, states), 0)
+    self.index.add(states.astype('float32'))
+
+    nn_size = self.index.ntotal
+
+    if nn_size > self.max_nn_index_size:
+      # prune half of the nn database
+      # I verified that this works as intended: when we remove ids from faiss, all ids get bumped up.
+      self.index.remove_ids(faiss.IDSelectorRange(0, self.max_nn_index_size // 2))
+      self.landmarks = self.landmarks[self.max_nn_index_size // 2:]
+      nn_size = self.index.ntotal
+      assert (len(self.landmarks) == nn_size)
+
+  def add_landmark_experience_data(self, states, actions, landmarks, desired_goals, additional):
+
+    self.landmark_buffer.add_batch(states, actions, landmarks, desired_goals, additional)
+
+    loss = 0
+    # run some training steps
+    for _ in range(self.num_training_steps):
+      self.steps += 1
+      s_, a_, l_, g_, add = self.landmark_buffer.sample(self.batch_size)
+      s = np.reshape(s_, [-1, np.prod(self.ob_space.shape)])
+      l = np.reshape(l_, [-1, np.prod(self.ob_space.shape)])
+      g = np.reshape(g_, [-1, np.prod(self.ob_space.shape)])
+      a = self.get_one_hot(a_.astype(int), self.ac_space.n)
+      if self.use_actions:
+        feed_dict = {self.g['sagadd_ph']: np.concatenate((s, a, g, add), axis=1),
+                     self.g['lm_ph']: l}
+      else:
+        feed_dict = {self.g['sagadd_ph']: np.concatenate((s, g, add), axis=1),
+                     self.g['lm_ph']: l}
+
+      _, loss_, summary = self.sess.run([self.g['ts'], self.g['loss'], self.g['summary']], feed_dict=feed_dict)
+      loss += loss_
+
+    if self.steps % 100 == 0:
+      print("Landmark CVAE step {}: loss {}".format(self.steps, loss / self.num_training_steps))
+
+    return summary
+
+  def generate(self, states, actions, goals):
+    self.states = states
+    self.actions = actions
+    self.goals = goals
+
+    # Generate randomly at first
+    if self.steps < self.learning_threshold:
+      sample_idx = np.random.choice(len(self.landmarks), len(states))
+      landmark_states = self.landmarks[sample_idx]
+      # Reshape it back to batch_size x H x W x C
+      landmark_states = np.reshape(landmark_states, [-1] + list(self.ob_space.shape))
+      self.landmark_states = landmark_states
+      landmark_goals = self.goal_extraction_function(landmark_states)
+
+      return landmark_states, landmark_goals
+
+    # Otherwise, generate using the VAE
+    states = np.reshape(states, [-1, np.prod(self.ob_space.shape)])
+    goals = np.reshape(goals, [-1, np.prod(self.ob_space.shape)])
+    actions = self.get_one_hot(actions.astype(int), self.ac_space.n)
+
+    sampled_zs = np.random.normal(size=(len(states), self.z_dim))
+    scores = np.concatenate([np.ones((len(states), 1)), np.zeros((len(states), 1))], 1) # condition on score = 1, ratio = 0.
+    if self.use_actions:
+      feed_dict = {self.g['z']: sampled_zs, self.g['sagadd_ph']: np.concatenate([states, actions, goals, scores], axis=1)}
+    else:
+      feed_dict = {self.g['z']: sampled_zs, self.g['sagadd_ph']: np.concatenate([states, goals, scores], axis=1)}
+    landmark_states = self.sess.run(self.g['generated_landmark'], feed_dict=feed_dict)
+
+    if self.refine_with_NN:
+      query = landmark_states.astype('float32')
+      _, lidxs = self.index.search(query, 1)
+      landmark_states = self.landmarks[lidxs[:, 0]]
+
+    # Reshape the landmark_states and goals back
+    landmark_states = np.reshape(landmark_states, [-1] + list(self.ob_space.shape))
+    landmark_goals = self.goal_extraction_function(landmark_states)
+
+    return landmark_states, landmark_goals
+
+  def assign_scores(self, scores, ratios):
+    # Do Nothing (this is not a score-based generator)
+    pass
+
+  def __len__(self):
+    return self.index.ntotal
+
+  def get_one_hot(self, targets, nb_classes):
+    res = np.eye(nb_classes)[np.array(targets).reshape(-1)]
+    return res.reshape(list(targets.shape) + [nb_classes])

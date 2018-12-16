@@ -27,7 +27,7 @@ class GoalGridWorldEnv(gym.GoalEnv):
         empty = 0
         agent = 1
         wall = 2
-        lava = 3
+        # lava = 3
 
     MOVE_DIRECTION = [[0,-1],[1,0],[0,1],[-1,0]] # up, right, down, left
 

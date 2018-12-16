@@ -17,8 +17,11 @@ from stable_baselines.a2c.utils import conv_to_fc
 
 from stable_baselines.simple_deepq import SimpleDQN as DQN
 from stable_baselines.common.policies import FeedForwardPolicy
-
+from stable_baselines.common.vec_env import SubprocVecEnv
+from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, NonScoreBasedImageVAEWithNNRefinement, ScoreBasedImageVAEWithNNRefinement
+from envs import discrete_to_box_wrapper
 from envs.goal_grid import GoalGridWorldEnv
+from stable_baselines.common import set_global_seeds
 
 def gridworld_cnn(scaled_images, **kwargs):
   """
@@ -60,18 +63,54 @@ def main(args):
 
     :param args: (ArgumentParser) the input arguments100000
     """
+
+    def make_env(env_fn, rank, seed=args.seed):
+      """
+      Utility function for multiprocessed env.
+
+      :param env_id: (str) the environment ID
+      :param num_env: (int) the number of environment you wish to have in subprocesses
+      :param seed: (int) the inital seed for RNG
+      :param rank: (int) index of the subprocess
+      """
+
+      def _init():
+        env = env_fn()
+        env.seed(seed + rank)
+        return env
+
+      set_global_seeds(seed)
+      return _init
+
     grid_file = "{}.txt".format(args.room_file)
-    env = GoalGridWorldEnv(grid_size=5, max_step=40, grid_file=grid_file)
+    # env = GoalGridWorldEnv(grid_size=5, max_step=40, grid_file=grid_file)
+    env_fn = lambda: GoalGridWorldEnv(grid_size=5, max_step=50, grid_file=grid_file)
+
+    env = SubprocVecEnv([make_env(env_fn, i) for i in range(12)])
+
     if args.model_type == "mlp":
         policy = GridWorldMlpPolicy
     elif args.model_type == "cnn":
         policy = GridWorldCnnPolicy
 
+    landmark_generator = None
+    if args.landmark_training:
+      if args.landmark_gen == 'random':
+        landmark_generator = RandomLandmarkGenerator(100000, make_env(env_fn, 1137)())
+      elif args.landmark_gen == 'nn':
+        landmark_generator = NearestNeighborLandmarkGenerator(100000, make_env(env_fn, 1137)())
+      elif 'lervae' in args.landmark_gen:
+        landmark_generator = NonScoreBasedImageVAEWithNNRefinement(int(args.landmark_gen.split('_')[1]), make_env(env_fn, 1137)(), refine_with_NN=args.refine_vae)
+      elif 'scorevae' in args.landmark_gen:
+        landmark_generator = ScoreBasedImageVAEWithNNRefinement(int(args.landmark_gen.split('_')[1]), make_env(env_fn, 1137)(), refine_with_NN=args.refine_vae)
+      else:
+        raise ValueError("Unsupported landmark_gen")
+
     model = DQN(
         env=env,
         policy=policy,
+        gamma=args.gamma,
         learning_rate=1e-3,
-        gamma=0.97,
         learning_starts=500,
         verbose=1,
         train_freq=args.train_freq,
@@ -84,13 +123,18 @@ def main(args):
         hindsight_mode=args.her,
         hindsight_frac=0.8,
         landmark_training=args.landmark_training,
+        landmark_mode=args.landmark_mode,
+        landmark_training_per_batch=args.landmark_k,
+        landmark_width=args.landmark_w,
+        landmark_generator=landmark_generator,
+        landmark_error=args.landmark_error,
         tensorboard_log="./dqn_goalgridworld_tensorboard/{}".format(args.room_file),
         eval_env=GoalGridWorldEnv(grid_size=5, max_step=40, grid_file=grid_file),
         eval_every=10,
     )
     assert model.goal_space is not None
-    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DQN_her-{}_landmark-{}_{}".format(
-                      args.her, args.landmark_training, args.tb))
+    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DQN_her-{}_landmark-{}_generator-{}_{}".format(
+                      args.her, args.landmark_training, args.landmark_gen, args.tb))
 
     model_filename = "goalgridworld_model_model-{}_timestep-{}_room-{}_her-{}_landmark-{}.pkl".format(args.model_type, 
                                                         args.max_timesteps, args.room_file, args.her, args.landmark_training)
@@ -108,7 +152,15 @@ if __name__ == '__main__':
     parser.add_argument('--room-file', default='room_5x5_empty', type=str,
                         help="Room type: room_5x5_empty (default), 2_room_9x9")
     parser.add_argument('--landmark-training', default=0., type=float, help='landmark training coefficient')
+    parser.add_argument('--landmark_mode', default='bidirectional', type=str, help='landmark training coefficient')
+    parser.add_argument('--landmark_k', default=1, type=int, help='number of landmark trainings per batch')
+    parser.add_argument('--landmark_w', default=1, type=int, help='number of steps landmarks can take')
+    parser.add_argument('--landmark_gen', default='random', type=str, help='landmark generator to use')
+    parser.add_argument('--landmark_error', default='linear', type=str, help='landmark error type (linear or squared)')
+    parser.add_argument('--refine_vae', default=False, type=bool, help='use nearest neighbor to refine VAE')
     parser.add_argument('--train-freq', default=10, type=int, help='how often to train')
     parser.add_argument('--tb', default='1', type=str, help="Tensorboard_name")
+    parser.add_argument('--gamma', default=0.97, type=float, help='discount factors')
+    parser.add_argument('--seed', default=0, type=int, help='random seed')
     args = parser.parse_args()
     main(args)
