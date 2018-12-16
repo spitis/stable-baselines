@@ -5,13 +5,11 @@ import numpy as np
 from scipy.signal import medfilt
 
 import argparse
-from argparse import Namespace
 
 import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-matplotlib.rcParams.update({'font.size': 12})
+matplotlib.rcParams.update({'font.size': 10})
 
 def smooth_reward_curve(x, y):
   """Smooths a reward curve--- how?"""
