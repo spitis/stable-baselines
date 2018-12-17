@@ -7,7 +7,7 @@ import os
 
 from gym import wrappers
 from envs.custom_fetch import CustomFetchReachEnv, CustomFetchPushEnv, CustomFetchPushEnv6DimGoal,\
-  CustomFetchSlideEnv, CustomFetchSlideEnv9DimGoal, CustomFetchPushEnvMultiDimGoal
+  CustomFetchSlideEnv, CustomFetchSlideEnv9DimGoal, CustomFetchPushEnvMultiDimGoal, CustomFetchSlideEnv_69
 from envs import discrete_to_box_wrapper
 from envs.goal_grid import GoalGridWorldEnv
 
@@ -69,6 +69,9 @@ def main(args):
     elif "CustomFetchPush_" in args.env:
       k = int(args.env.split('_')[1])
       env_fn = lambda: CustomFetchPushEnvMultiDimGoal(goal_dims = k)
+    elif "CustomFetchSlide_" in args.env:
+      k = int(args.env.split('_')[1])
+      env_fn = lambda: CustomFetchSlideEnv_69(six_or_nine = k)
     elif args.env == "CustomFetchSlide9Dim":
       env_fn = lambda: CustomFetchSlideEnv9DimGoal()
     elif args.env == "CustomFetchSlide":
