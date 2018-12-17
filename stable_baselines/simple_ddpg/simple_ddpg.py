@@ -766,7 +766,6 @@ class SimpleDDPG(SimpleRLModel):
         'landmark_training_per_batch': self.landmark_training_per_batch,
         'landmark_width': self.landmark_width,
         'landmark_error': self.landmark_error,
-        #'landmark_generator': self.landmark_generator,
         'action_noise': self.action_noise,
         'epsilon_random_exploration': self.epsilon_random_exploration,
         "param_noise": self.param_noise,
@@ -791,6 +790,10 @@ class SimpleDDPG(SimpleRLModel):
         'eval_env': self.eval_env,
         'eval_every': self.eval_every,
     }
+
+    if self.landmark_generator is not None:
+      generator_save_path = save_path + ".gen"
+      self.landmark_generator.save(generator_save_path)
 
     # Model paramaters to be restored
     params = self.sess.run(self.params)
