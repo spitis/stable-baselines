@@ -231,7 +231,13 @@ class GoalGridWorldEnv(gym.GoalEnv):
         rows = 1
         plt.clf()
 
-        imgs = [self._get_state(self.grid, use_one_hot=False), self.goal]
+        if mode == "RGB":
+          # When there are only 3 objects, can encode each object with red/green/blue value
+          assert(len(self.objects) == 3)
+          imgs = [self._get_state(self.grid, use_one_hot=True), self.one_hot(self.goal, len(self.objects))]
+        else:
+          imgs = [self._get_state(self.grid, use_one_hot=False), self.goal]
+
         titles = ["Observation", "Goal"]
         for i in range(1, columns * rows + 1):
             ax = plt.subplot(rows, columns, i)

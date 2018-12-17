@@ -9,7 +9,8 @@ from itertools import chain
 
 from stable_baselines.common import tf_util, SimpleRLModel, SetVerbosity
 from stable_baselines.common.schedules import LinearSchedule
-from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, her_future_landmark, HerFutureAchievedPastActual
+from stable_baselines.common.replay_buffer import ReplayBuffer, EpisodicBuffer, her_final, her_future, her_future_landmark,\
+                                                   HerFutureAchievedPastActual, HerFutureAchievedPastActualLandmark
 from stable_baselines.common.policies import observation_input
 from stable_baselines.common.landmark_generator import AbstractLandmarkGenerator
 
@@ -380,7 +381,6 @@ class SimpleDQN(SimpleRLModel):
 
         # Log the state, action, goal, and landmark state
         # with tf.variable_scope("input_info_viz", reuse=False):
-        import pdb; pdb.set_trace()
         tf.summary.image('input state', tf.cast(self._obs1_ph, tf.float32), max_outputs=1)
         tf.summary.image('input goal', tf.cast(self._goal_ph, tf.float32), max_outputs=1)
         action_shape = tf.reshape(self._action_ph, [-1, self.action_space.n, 1, 1])
@@ -423,7 +423,10 @@ class SimpleDQN(SimpleRLModel):
     elif isinstance(self.hindsight_mode,
                     str) and 'futureactual_' in self.hindsight_mode:
       _, k, p = self.hindsight_mode.split('_')
-      self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
+      if self.landmark_generator is not None:
+        self.hindsight_fn = HerFutureAchievedPastActualLandmark(int(k), int(p), self.env.compute_reward)
+      else:
+        self.hindsight_fn = HerFutureAchievedPastActual(int(k), int(p), self.env.compute_reward)
       self.hindsight_frac = 1. - 1. / (1. + float(k + p))
     else:
       self.hindsight_fn = None
@@ -645,6 +648,40 @@ class SimpleDQN(SimpleRLModel):
 
     return actions, None
 
+  def get_value(self, observation, state=None, goal=None):
+    """
+    Gets the Q values for each action given the current observation.
+
+    :param observation:
+    :param state:
+    :param goal:
+    :return:
+    """
+    goal_agent = self.goal_space is not None
+
+    if not goal_agent:
+      observation = np.array(observation)
+    else:
+      desired_goal = np.array(observation['desired_goal'])
+      desired_goal = desired_goal.reshape((-1,) + self.goal_space.shape)
+      observation = np.array(observation['observation'])
+
+    vectorized_env = self._is_vectorized_observation(observation, self.observation_space)
+    observation = observation.reshape((-1,) + self.observation_space.shape)
+
+    if goal_agent:
+      values = self.sess.run(self.target_model.q_values, {
+        self._obs2_ph: observation,
+        self._goal2_ph: desired_goal,
+      })
+    else:
+      values = self.sess.run(self.target_model.q_values, {self._obs2_ph: observation})
+
+    if not vectorized_env:
+      values = values[0]
+
+    return values, None
+
   def save(self, save_path):
     # Things set in the __init__ method should be saved here, because the model is called with default args on load(),
     # which are subsequently updated using this dict.
@@ -666,8 +703,6 @@ class SimpleDQN(SimpleRLModel):
         'landmark_training_per_batch': self.landmark_training_per_batch,
         'landmark_width': self.landmark_width,
         'landmark_error': self.landmark_error,
-        # 'landmark_width': self.landmark_width,
-        #'landmark_generator': self.landmark_generator,
         "double_q": self.double_q,
         "grad_norm_clipping": self.grad_norm_clipping,
         "tensorboard_log": self.tensorboard_log,
@@ -678,6 +713,10 @@ class SimpleDQN(SimpleRLModel):
         "n_envs": self.n_envs,
         "_vectorize_action": self._vectorize_action
     }
+
+    if self.landmark_generator is not None:
+      generator_save_path = save_path + ".gen"
+      self.landmark_generator.save(generator_save_path)
 
     # Model paramaters to be restored
     params = self.sess.run(self.params)

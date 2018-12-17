@@ -7,6 +7,7 @@ python train_goalgridworld.py --model-type cnn --max-timestep 5000 --her future_
 
 python train_goalgridworld.py --model-type cnn --max-timestep 10000 --her future_4 --room-file 2_room_9x9 --landmark-training 0.01
 
+python train_goalgridworld.py --model-type cnn --max-timestep 40000 --her future_4 --room-file 4_room_13x13_outerwalls --landmark-training 0.05 --landmark_gen scorevae_30000 --refine_vae 1
 """
 import argparse
 
@@ -18,7 +19,8 @@ from stable_baselines.a2c.utils import conv_to_fc
 from stable_baselines.simple_deepq import SimpleDQN as DQN
 from stable_baselines.common.policies import FeedForwardPolicy
 from stable_baselines.common.vec_env import SubprocVecEnv
-from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, NonScoreBasedImageVAEWithNNRefinement, ScoreBasedImageVAEWithNNRefinement
+from stable_baselines.common.landmark_generator import RandomLandmarkGenerator, NearestNeighborLandmarkGenerator, \
+                                              NonScoreBasedImageVAEWithNNRefinement, ScoreBasedImageVAEWithNNRefinement
 from envs import discrete_to_box_wrapper
 from envs.goal_grid import GoalGridWorldEnv
 from stable_baselines.common import set_global_seeds
@@ -84,7 +86,7 @@ def main(args):
 
     grid_file = "{}.txt".format(args.room_file)
     # env = GoalGridWorldEnv(grid_size=5, max_step=40, grid_file=grid_file)
-    env_fn = lambda: GoalGridWorldEnv(grid_size=5, max_step=50, grid_file=grid_file)
+    env_fn = lambda: GoalGridWorldEnv(grid_size=5, max_step=32, grid_file=grid_file)
 
     env = SubprocVecEnv([make_env(env_fn, i) for i in range(12)])
 
@@ -117,7 +119,7 @@ def main(args):
         batch_size=128,
         buffer_size=200000,
         exploration_fraction=0.8,
-        exploration_final_eps=0.1,
+        exploration_final_eps=0.05,
         target_network_update_frac=0.02,
         target_network_update_freq=20,
         hindsight_mode=args.her,
@@ -128,16 +130,22 @@ def main(args):
         landmark_width=args.landmark_w,
         landmark_generator=landmark_generator,
         landmark_error=args.landmark_error,
-        tensorboard_log="./dqn_goalgridworld_tensorboard/{}".format(args.room_file),
+        tensorboard_log="./dqn_goalgridworld_tensorboard/FinalReport/{}/".format(args.room_file),
         eval_env=GoalGridWorldEnv(grid_size=5, max_step=40, grid_file=grid_file),
         eval_every=10,
     )
     assert model.goal_space is not None
-    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DQN_her-{}_landmark-{}_generator-{}_{}".format(
-                      args.her, args.landmark_training, args.landmark_gen, args.tb))
+    model.learn(total_timesteps=args.max_timesteps, tb_log_name="DQN_her-{}_landmark-{}_generator-{}_seed-{}_{}".format(
+                      args.her, args.landmark_training, args.landmark_gen, args.seed, args.tb))
 
-    model_filename = "goalgridworld_model_model-{}_timestep-{}_room-{}_her-{}_landmark-{}.pkl".format(args.model_type, 
-                                                        args.max_timesteps, args.room_file, args.her, args.landmark_training)
+    model_filename = "FinalReport/goalgridworld_model_model-{}_timestep-{}_room-{}_her-{}".format(args.model_type,
+                                                        args.max_timesteps, args.room_file, args.her)
+    if args.landmark_training > 0:
+      model_filename += "_landmark-{}_generator-{}_refinevae-{}".format(args.landmark_training, 
+                                                        args.landmark_gen,
+                                                        args.refine_vae)
+    model_filename += "_seed-{}.pkl".format(args.seed)
+
     print("Saving model to {}".format(model_filename))
     model.save(model_filename)
 
@@ -150,7 +158,7 @@ if __name__ == '__main__':
     parser.add_argument('--model-type', default='mlp', type=str, help="Model type: cnn, mlp (default)")
     parser.add_argument('--her', default='none', type=str, help="HER type: final, future_k, none (default)")
     parser.add_argument('--room-file', default='room_5x5_empty', type=str,
-                        help="Room type: room_5x5_empty (default), 2_room_9x9")
+                        help="Room type: room_5x5_empty (default), 2_room_9x9, 4_room_13x13_outerwalls")
     parser.add_argument('--landmark-training', default=0., type=float, help='landmark training coefficient')
     parser.add_argument('--landmark_mode', default='bidirectional', type=str, help='landmark training coefficient')
     parser.add_argument('--landmark_k', default=1, type=int, help='number of landmark trainings per batch')

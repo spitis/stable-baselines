@@ -1,4 +1,5 @@
 import numpy as np, tensorflow as tf, os, cloudpickle
+import tensorflow_probability as tfp
 from stable_baselines.common.replay_buffer import ReplayBuffer
 from stable_baselines.common import tf_util
 from abc import ABC, abstractmethod
@@ -11,12 +12,13 @@ class AbstractLandmarkGenerator(ABC):
 
   def __init__(self, buffer_size, env, _init_setup_model=True):
     self.buffer_size = buffer_size
-    self.ac_space = env.action_space
-    self.ob_space = env.observation_space.spaces['observation']
-    self.goal_space = env.observation_space.spaces['achieved_goal']
-    if not env.goal_extraction_function:
+    self.env = env
+    self.ac_space = self.env.action_space
+    self.ob_space = self.env.observation_space.spaces['observation']
+    self.goal_space = self.env.observation_space.spaces['achieved_goal']
+    if not self.env.goal_extraction_function:
       raise ValueError("Environment must have goal_extraction_function method")
-    self.goal_extraction_function = env.goal_extraction_function
+    self.goal_extraction_function = self.env.goal_extraction_function
 
     self.states = None
     self.landmark_states = None
@@ -156,7 +158,8 @@ class RandomLandmarkGenerator(AbstractLandmarkGenerator):
       "ac_space": self.ac_space,
       "ob_space": self.ob_space,
       "goal_space": self.goal_space,
-      "goal_extraction_function": self.goal_extraction_function
+      "goal_extraction_function": self.goal_extraction_function,
+      "env": self.env
     }
 
     self._save_to_file(save_path, data=data, params=None)
@@ -226,7 +229,6 @@ class NearestNeighborLandmarkGenerator(AbstractLandmarkGenerator):
     self.time += self.time_scale
     time_feature = np.ones((len(self.states),1)) * self.time
 
-    import pdb; pdb.set_trace()
     values = np.concatenate((self.states, self.goals, time_feature), 1)
 
     saved_idxs = np.squeeze(np.argwhere(scores > self.score_cutoff),1)
@@ -259,7 +261,8 @@ class NearestNeighborLandmarkGenerator(AbstractLandmarkGenerator):
       "ac_space": self.ac_space,
       "ob_space": self.ob_space,
       "goal_space": self.goal_space,
-      "goal_extraction_function": self.goal_extraction_function
+      "goal_extraction_function": self.goal_extraction_function,
+      "env": self.env
     }
 
     index_filename = save_path + '.faiss_idx'
@@ -455,7 +458,9 @@ class NonScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       "ac_space": self.ac_space,
       "ob_space": self.ob_space,
       "goal_space": self.goal_space,
-      "goal_extraction_function": self.goal_extraction_function
+      "goal_extraction_function": self.goal_extraction_function,
+      "buffer_size": self.buffer_size,
+      "env": self.env
     }
 
     index_filename = save_path + '.faiss_idx'
@@ -665,7 +670,9 @@ class ScoreBasedVAEWithNNRefinement(AbstractLandmarkGenerator):
       "ac_space": self.ac_space,
       "ob_space": self.ob_space,
       "goal_space": self.goal_space,
-      "goal_extraction_function": self.goal_extraction_function
+      "goal_extraction_function": self.goal_extraction_function,
+      "buffer_size": self.buffer_size,
+      "env": self.env
     }
 
     index_filename = save_path + '.faiss_idx'
@@ -754,30 +761,35 @@ class NonScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
     self.d = np.prod(self.ob_space.shape)
     self.index = faiss.IndexFlatL2(int(self.d))
 
+    if _init_setup_model:
+      self._setup_model()
+
+  def _setup_model(self):
     ## CVAE Graph ##
     self.graph = tf.Graph()
     with self.graph.as_default():
       self.sess = tf_util.make_session(graph=self.graph)
 
-      sag_len = np.prod(self.ob_space.shape) + np.prod(self.goal_space.shape)
+      with tf.variable_scope("lervae"):
+        sag_len = np.prod(self.ob_space.shape) + np.prod(self.goal_space.shape)
 
-      if self.use_actions:
-        sag_len += self.ac_space.n
-      state_action_goal = tf.placeholder(tf.float32, [None, sag_len], name='sag_placeholder')
-      landmark = tf.placeholder(tf.float32, [None, np.prod(self.ob_space.shape)], name='lm_placeholder')
+        if self.use_actions:
+          sag_len += self.ac_space.n
+        state_action_goal = tf.placeholder(tf.float32, [None, sag_len], name='sag_placeholder')
+        landmark = tf.placeholder(tf.float32, [None, np.prod(self.ob_space.shape)], name='lm_placeholder')
 
-      # encoder
-      h = tf.layers.dense(tf.concat([state_action_goal, landmark], axis=1), self.hidden_dim, activation=tf.nn.relu)
-      h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
-      mu = tf.layers.dense(h, self.z_dim)
-      log_variance = tf.layers.dense(h, self.z_dim)
-      z = tf.random_normal(shape=tf.shape(mu)) * tf.sqrt(tf.exp(log_variance)) + mu
+        # encoder
+        h = tf.layers.dense(tf.concat([state_action_goal, landmark], axis=1), self.hidden_dim, activation=tf.nn.relu)
+        h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
+        mu = tf.layers.dense(h, self.z_dim)
+        log_variance = tf.layers.dense(h, self.z_dim)
+        z = tf.random_normal(shape=tf.shape(mu)) * tf.sqrt(tf.exp(log_variance)) + mu
 
-      # decoder
+        # decoder
 
-      h = tf.layers.dense(tf.concat([state_action_goal, z], axis=1), self.hidden_dim, activation=tf.nn.relu)
-      h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
-      generated_landmark = tf.layers.dense(h, np.prod(self.ob_space.shape))
+        h = tf.layers.dense(tf.concat([state_action_goal, z], axis=1), self.hidden_dim, activation=tf.nn.relu)
+        h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
+        generated_landmark = tf.layers.dense(h, np.prod(self.ob_space.shape))
       
       # Distortion is the negative log likelihood:  P(X|z,c)
       l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
@@ -807,7 +819,6 @@ class NonScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
         landmark_orig_shape = tf.reshape(landmark, [-1] + list(self.ob_space.shape))
         tf.summary.image("VAE_train_landmark", landmark_orig_shape, max_outputs=1)
 
-        import pdb; pdb.set_trace()
         # Split the SAG placeholder tensor into individual one
         if self.use_actions:
           state_ph, action_ph, goal_ph = tf.split(state_action_goal, [np.prod(self.ob_space.shape), self.ac_space.n, np.prod(self.goal_space.shape)], 1)
@@ -823,6 +834,7 @@ class NonScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
         tf.summary.image("VAE_goal_input", goal_orig_shape, max_outputs=1)
 
       self.summary = tf.summary.merge_all()
+      self.params = tf.global_variables("lervae")
 
     self.sess.run(init)
 
@@ -926,6 +938,41 @@ class NonScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
   def __len__(self):
     return self.index.ntotal
 
+  def save(self, save_path):
+    """
+        Save the current parameters to file
+        :param save_path: (str) the save location
+        """
+    # self._save_to_file(save_path, data={}, params=None)
+    data = {
+      "landmark_buffer": self.landmark_buffer,
+      "refine_with_NN": self.refine_with_NN,
+      "use_actions": self.use_actions,
+      "hidden_dim": self.hidden_dim,
+      "z_dim": self.z_dim,
+      "batch_size": self.batch_size,
+      "num_training_steps": self.num_training_steps,
+      "learning_threshold": self.learning_threshold,
+      "max_nn_index_size": self.max_nn_index_size,
+      "steps": self.steps,
+      "landmarks": self.landmarks,
+      "d": self.d,
+      "ac_space": self.ac_space,
+      "ob_space": self.ob_space,
+      "goal_space": self.goal_space,
+      "goal_extraction_function": self.goal_extraction_function,
+      "buffer_size": self.buffer_size,
+      "env": self.env
+    }
+
+    index_filename = save_path + '.faiss_idx'
+    faiss.write_index(self.index, index_filename)
+
+    # Model paramaters to be restored
+    params = self.sess.run(self.params)
+
+    self._save_to_file(save_path, data=data, params=params)
+
   def get_one_hot(self, targets, nb_classes):
     res = np.eye(nb_classes)[np.array(targets).reshape(-1)]
     return res.reshape(list(targets.shape) + [nb_classes])
@@ -961,34 +1008,45 @@ class ScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
     ## NN Index ##
     self.d = np.prod(self.ob_space.shape)
     self.index = faiss.IndexFlatL2(int(self.d))
+    if _init_setup_model:
+      self._setup_model()
 
+  def _setup_model(self):
     ## CVAE Graph ##
     self.graph = tf.Graph()
     with self.graph.as_default():
       self.sess = tf_util.make_session(graph=self.graph)
 
-      sag_len = np.prod(self.ob_space.shape) + np.prod(self.goal_space.shape) + 2
+      with tf.variable_scope("scorevae"):
+        sag_len = np.prod(self.ob_space.shape) + np.prod(self.goal_space.shape) + 2
 
-      if self.use_actions:
-        sag_len += self.ac_space.n
-      state_action_goal_scores = tf.placeholder(tf.float32, [None, sag_len], name='sag_placeholder')
-      landmark = tf.placeholder(tf.float32, [None, np.prod(self.ob_space.shape)], name='lm_placeholder')
+        if self.use_actions:
+          sag_len += self.ac_space.n
+        state_action_goal_scores = tf.placeholder(tf.float32, [None, sag_len], name='sag_placeholder')
+        landmark = tf.placeholder(tf.float32, [None, np.prod(self.ob_space.shape)], name='lm_placeholder')
 
-      # encoder
-      h = tf.layers.dense(tf.concat([state_action_goal_scores, landmark], axis=1), self.hidden_dim, activation=tf.nn.relu)
-      h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
-      mu = tf.layers.dense(h, self.z_dim)
-      log_variance = tf.layers.dense(h, self.z_dim)
-      z = tf.random_normal(shape=tf.shape(mu)) * tf.sqrt(tf.exp(log_variance)) + mu
+        # encoder
+        h = tf.layers.dense(tf.concat([state_action_goal_scores, landmark], axis=1), self.hidden_dim, activation=tf.nn.relu)
+        h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
+        mu = tf.layers.dense(h, self.z_dim)
+        log_variance = tf.layers.dense(h, self.z_dim)
+        z = tf.random_normal(shape=tf.shape(mu)) * tf.sqrt(tf.exp(log_variance)) + mu
 
-      # decoder
+        # decoder
 
-      h = tf.layers.dense(tf.concat([state_action_goal_scores, z], axis=1), self.hidden_dim, activation=tf.nn.relu)
-      h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
-      generated_landmark = tf.layers.dense(h, np.prod(self.ob_space.shape))
+        h = tf.layers.dense(tf.concat([state_action_goal_scores, z], axis=1), self.hidden_dim, activation=tf.nn.relu)
+        h = tf.layers.dense(h, self.hidden_dim, activation=tf.nn.relu)
+        generated_landmark = tf.layers.dense(h, np.prod(self.ob_space.shape))
+        # logit = tf.layers.dense(h, np.prod(self.ob_space.shape))
+        # landmark_likelihood = tfp.distributions.Independent(tfp.distributions.Bernoulli(logit), 1) # Treat the last dim as one image
+        # generated_landmark = tf.cast(tf.reduce_mean(landmark_likelihood.sample(10), 0), tf.float32) # Sample 1 samples and average them
       
       # Distortion is the negative log likelihood:  P(X|z,c)
+      # TODO: Change into bernoulli loss?
       l2_loss = tf.reduce_sum(tf.squared_difference(landmark, generated_landmark), 1)
+      # l2_loss = landmark_likelihood.log_prob(landmark)
+      # l2_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=landmark,logits=logit), 1)
+
       # The rate is the D_KL(Q(z|X,y)||P(z|c))
       latent_loss = -0.5 * tf.reduce_sum(1.0 + log_variance - tf.square(mu) - tf.exp(log_variance), 1)
       loss = tf.reduce_mean(l2_loss + latent_loss)
@@ -1015,7 +1073,6 @@ class ScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
         landmark_orig_shape = tf.reshape(landmark, [-1] + list(self.ob_space.shape))
         tf.summary.image("VAE_train_landmark", landmark_orig_shape, max_outputs=1)
 
-        import pdb; pdb.set_trace()
         # Split the SAG placeholder tensor into individual one
         if self.use_actions:
           state_ph, action_ph, goal_ph, scores_ph = tf.split(state_action_goal_scores, [np.prod(self.ob_space.shape), self.ac_space.n, np.prod(self.goal_space.shape), 2], 1)
@@ -1031,6 +1088,7 @@ class ScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
         tf.summary.image("VAE_goal_input", goal_orig_shape, max_outputs=1)
 
       self.summary = tf.summary.merge_all()
+      self.params = tf.global_variables("scorevae")
 
     self.sess.run(init)
 
@@ -1134,6 +1192,42 @@ class ScoreBasedImageVAEWithNNRefinement(AbstractLandmarkGenerator):
 
   def __len__(self):
     return self.index.ntotal
+
+  def save(self, save_path):
+    """
+    Save the current parameters to file
+    :param save_path: (str) the save location
+    """
+    # self._save_to_file(save_path, data={}, params=None)
+    data = {
+      "get_scores_with_experiences": self.get_scores_with_experiences,
+      "landmark_buffer": self.landmark_buffer,
+      "refine_with_NN": self.refine_with_NN,
+      "use_actions": self.use_actions,
+      "hidden_dim": self.hidden_dim,
+      "z_dim": self.z_dim,
+      "batch_size": self.batch_size,
+      "num_training_steps": self.num_training_steps,
+      "learning_threshold": self.learning_threshold,
+      "max_nn_index_size": self.max_nn_index_size,
+      "steps": self.steps,
+      "landmarks": self.landmarks,
+      "d": self.d,
+      "ac_space": self.ac_space,
+      "ob_space": self.ob_space,
+      "goal_space": self.goal_space,
+      "goal_extraction_function": self.goal_extraction_function,
+      "buffer_size": self.buffer_size,
+      "env": self.env
+    }
+
+    index_filename = save_path + '.faiss_idx'
+    faiss.write_index(self.index, index_filename)
+
+    # Model paramaters to be restored
+    params = self.sess.run(self.params)
+
+    self._save_to_file(save_path, data=data, params=params)
 
   def get_one_hot(self, targets, nb_classes):
     res = np.eye(nb_classes)[np.array(targets).reshape(-1)]
